@@ -39,7 +39,7 @@ export default function Navbar({ onMenuClick }) {
 
         {/* Profile DP (placeholder) */}
         <img
-          src="./assets/dp.png"
+          src="../assets/dp.png"
           alt="profile"
           className="w-10 h-10 rounded-full border"
         />
