@@ -5,11 +5,6 @@ import AddUser from "./AddUser";
 import Edit from "./Edit";
 import axiosClient from "../api/axiosClient";
 import { useQuery } from "@tanstack/react-query";
-import Navbar from "./Navbar";
-import Sidebar from "./Sidebar";
-
-
-
 
 //  UserCard shows minimal info + action buttons
 function UserCard({ user, onView, onEdit, setDeleteUser }) {
@@ -122,56 +117,50 @@ export default function Users() {
   }, [data]);
 
   if (isLoading)
+    return <p className="  dark:text-white text-center ">Loading users…</p>;
+  if (isError)
     return (
-      <p className="  dark:text-white ">
-        Loading users…
+      <p className="  dark:text-white text-center ">
+        Error: {error?.message ?? "Unknown error"}
       </p>
     );
-  if (isError) return <p className="  dark:text-white ">Error: {error?.message ?? "Unknown error"}</p>;
   if (!users.length) return <p>No users found</p>;
 
-
-
-
-
- 
-
-
-const filteredUsers = users.filter(
-  (u) =>
-    u.firstName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.lastName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.email.toLowerCase().includes(searchTerm.toLowerCase())
-);
-
+  const filteredUsers = users.filter(
+    (u) =>
+      u.firstName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      u.lastName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      u.email.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
   return (
-    
     <section className="p-6  h-lvh ">
-     
-      
       <div className="flex justify-between items-center gap-1  mb-15">
-      {/* Global Add User button */}
-      <button
-        onClick={() => setShowAddModal(true)}
-        className="px-4 py-2 rounded bg-green-600 text-white hover:bg-green-700"
-      >
-        + Add User
-      </button>
+        {/* Global Add User button */}
+        <button
+          onClick={() => setShowAddModal(true)}
+          className="px-4 py-2 rounded bg-green-600 text-white hover:bg-green-700"
+        >
+          + Add User
+        </button>
 
-      {/* Show AddUser modal when button clicked */}
-      {showAddModal && (
-        <AddUser onAdd={handleAddUser} onClose={() => setShowAddModal(false)} />
-      )}
+        {/* Show AddUser modal when button clicked */}
+        {showAddModal && (
+          <AddUser
+            onAdd={handleAddUser}
+            onClose={() => setShowAddModal(false)}
+          />
+        )}
 
- <input
-  type="text"
-  placeholder="Search users..."
-  value={searchTerm}
-  onChange={(e) => setSearchTerm(e.target.value)}
-  className=" p-2 border rounded w-auto dark:bg-gray-700 dark:text-white"
-/></div>
- <h2 className="text-3xl font-bold py-4 dark:text-white">List of Users</h2>
+        <input
+          type="text"
+          placeholder="Search users..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className=" p-2 border rounded w-auto dark:bg-gray-700 dark:text-white"
+        />
+      </div>
+      <h2 className="text-3xl font-bold py-4 dark:text-white">List of Users</h2>
       {/* User cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 ">
         {filteredUsers.map((u) => (
@@ -180,11 +169,10 @@ const filteredUsers = users.filter(
             user={u}
             onView={(user) => setSelectedUser(user)}
             onEdit={(user) => setEditUser(user)}
-            setDeleteUser={setDeleteUser} // pass it down
+            setDeleteUser={setDeleteUser}
           />
         ))}
       </div>
-
 
       {deleteUser && (
         <Modal

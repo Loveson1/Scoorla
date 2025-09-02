@@ -9,10 +9,10 @@ export default function Layout() {
 
   return (
     <div className="min-h-screen flex flex-col bg-white dark:bg-gray-900">
-     <div className=" py-3 px-12">
-      {/* Navbar */}
-      <Navbar onMenuClick={() => setIsSidebarOpen(true)} />
-</div>
+      <div className=" py-4">
+        {/* Navbar */}
+        <Navbar onMenuClick={() => setIsSidebarOpen(true)} />
+      </div>
       <div className="flex flex-1">
         {/* Sidebar */}
         <Sidebar

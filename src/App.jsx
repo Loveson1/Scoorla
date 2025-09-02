@@ -1,14 +1,16 @@
 // src/App.jsx
 import React from "react";
-import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  Navigate,
+} from "react-router-dom";
 import Layout from "./components/Layout";
 import Home from "./components/Home";
 import Users from "./components/Users";
 
 function App() {
-
-
-
   return (
     <Router>
       <Routes>

@@ -23,7 +23,7 @@ export default function AddUser({ onAdd, onClose }) {
   // Handle submit
   const handleSubmit = (e) => {
     e.preventDefault();
-    //  console.log("AddUser.handleSubmit ->", formData); 
+    //  console.log("AddUser.handleSubmit ->", formData);
 
     // Send the new user object back to parent
     onAdd(formData);
@@ -98,24 +98,16 @@ export default function AddUser({ onAdd, onClose }) {
             className="w-full p-2 border rounded"
           />
 
-          <div className="flex justify-end space-x-3 pt-3">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 rounded bg-gray-400 text-white"
-            >
-              Cancel
-            </button>
+          <div className="flex gap-2 mt-2">
             <button
               type="submit"
-              className="px-4 py-2 rounded bg-blue-600 text-white"
+              className="px-4 py-2 bg-green-600 text-white rounded"
             >
-              Add
+              Submit
             </button>
           </div>
-        </form>  
-        </Modal>
-      </div>
-  
+        </form>
+      </Modal>
+    </div>
   );
 }

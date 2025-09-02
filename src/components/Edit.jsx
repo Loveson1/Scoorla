@@ -17,7 +17,7 @@ export default function EditUser({ user, onEdit, onClose }) {
   // Handle form changes
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
+    setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
   // Handle submit
@@ -89,7 +89,10 @@ export default function EditUser({ user, onEdit, onClose }) {
         />
 
         <div className="flex gap-2 mt-2">
-          <button type="submit" className="px-4 py-2 bg-green-600 text-white rounded">
+          <button
+            type="submit"
+            className="px-4 py-2 bg-green-600 text-white rounded"
+          >
             Submit
           </button>
         </div>

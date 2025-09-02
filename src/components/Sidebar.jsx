@@ -27,10 +27,18 @@ export default function Sidebar({ isOpen, onClose }) {
         </div>
 
         <nav className="space-y-4">
-          <Link to="/home" onClick={onClose} className="block hover:underline dark:text-white">
+          <Link
+            to="/home"
+            onClick={onClose}
+            className="block hover:underline dark:text-white"
+          >
             Home
           </Link>
-          <Link to="/Users" onClick={onClose} className="block hover:underline dark:text-white">
+          <Link
+            to="/Users"
+            onClick={onClose}
+            className="block hover:underline dark:text-white"
+          >
             Dashboard
           </Link>
         </nav>
