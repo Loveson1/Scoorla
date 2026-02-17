@@ -1,2 +1,121 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
+html{
+  overflow-x: hidden;
+}
+
+@layer base {
+  /* utility classes */
+
+  /* .spacing {
+    @apply sm:px-[100px] px-[20px] mx-auto;
+  } */
+
+  /* p {
+    @apply lg:text-lg  text-[15px] dark:text-white text-black leading-[1.2];
+  }
+
+  ul,
+  li,
+  a {
+    @apply text-[18px]  list-none text-black font-semibold;
+  }
+
+  /* ul,
+  li:hover,
+  a:hover {
+    @apply text-white opacity-100 font-semibold duration-500 ease-in-out;
+  } */
+/* 
+  h1 {
+    @apply sm:text-[55px] dark:text-white text-black  text-[26px] font-extrabold;
+  }
+
+  h2 {
+    @apply sm:text-[45px] dark:text-white text-black   text-[20px] font-extrabold leading-[1.2] max-sm:max-w-[300px];
+  }
+  h3 {
+    @apply sm:text-[35px] dark:text-white text-black   text-[15px] font-medium leading-[1.2];
+  }
+  h4 {
+    @apply sm:text-[33px] dark:text-white text-black   text-[20px] font-bold leading-[1.2];
+  }
+
+  h5 {
+    @apply sm:text-[25px] dark:text-white text-black  text-[18px] font-medium;
+  }
+
+  h6 {
+    @apply sm:text-[17px] dark:text-white text-black   text-[15px] font-bold leading-[1.2];
+  } */ */
+
+  /* .btn-blue {
+    @apply text-nowrap font-bold text-white bg-blue-800 py-[9px] px-[41px] sm:py-[12px] sm:px-[39px] text-[14px] rounded-lg sm:w-[235px] border-[2px] sm:border-[3px] border-blue-800;
+  }
+  .btn-white {
+    @apply text-nowrap font-bold  text-blue-800 bg-white py-[9px]  px-[41px] sm:py-[12px] sm:px-[39px]  text-[14px]  rounded-lg border-blue-800 border-[2px]  sm:border-[3px] sm:w-[235px];
+  } */
+  .btn:hover {
+    @apply text-white bg-blue-800  duration-500 ease-in-out;
+  }
+}
+
+/* button style */
+.btn-blue {
+  @apply text-nowrap font-bold text-white bg-blue-800 py-[9px] px-[41px] sm:py-[12px] sm:px-[39px] text-[14px] rounded-lg sm:w-[235px] border-[2px] sm:border-[3px] border-blue-800;
+}
+.btn-white {
+  @apply text-nowrap font-bold  text-blue-800 bg-white py-[9px]  px-[41px] sm:py-[12px] sm:px-[39px]  text-[14px]  rounded-lg border-blue-800 border-[2px]  sm:border-[3px] sm:w-[235px];
+}
+.btn:hover {
+  @apply text-white bg-blue-950  duration-500 ease-in-out;
+}
+
+/*  utility  classes  */
+.form-btn {
+  @apply text-white font-bold bg-blue-800 py-[9px] px-[45px] sm:py-[12px] sm:px-[40px] text-[14px] rounded-lg;
+}
+
+img {
+  @apply object-cover;
+}
+
+.footer-form {
+  @apply my-[20px] border-gray-400 border-[1px] rounded-[9px] p-2;
+}
+
+.form {
+  @apply border-gray-400 border-[1px] rounded-[9px] p-2;
+}
+
+.label {
+  @apply text-[16px] dark:text-white text-black  font-semibold mb-2;
+}
+
+.label-w {
+  @apply text-[16px] dark:text-white text-black font-medium;
+}
+
+.input {
+  @apply bg-gray-50 border border-gray-300 rounded-lg py-[10px] px-[16px] placeholder:text-[15px] placeholder:text-gray-500 placeholder:font-thin;
+}
+
+.input-sel {
+  @apply bg-gray-50 border border-gray-300  rounded-lg py-[10.8px] px-[16px] placeholder:text-[15px] placeholder:text-gray-500 placeholder:font-medium text-gray-300 font-medium;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.5s ease-out forwards;
+}

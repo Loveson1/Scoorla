@@ -1,21 +1,21 @@
 // src/pages/Home.jsx
-import React from "react";
-import { Link } from "react-router-dom";
+import React, { useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 
 export default function Home() {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    // Users who reach here are authenticated and onboarded
+    // Automatically redirect to the main dashboard (school-dashboard)
+    navigate("/school-dashboard", { replace: true });
+  }, [navigate]);
+
   return (
-    <div className="flex justify-center">
-      <div className="  flex flex-col items-center justify-self-start h-screen dark:bg-gray-900 dark:text-white ">
-        <h1 className="text-5xl font-bold mt-20 text-center">
-          Welcome to Mini Board
-        </h1>
-        <h2 className="text-3xl font-bold py-4 text-center">Ready to Work?</h2>
-        <Link
-          to="/Users"
-          className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white text-center"
-        >
-          Go to Dashboard
-        </Link>
+    <div className="flex justify-center bg-white dark:bg-gray-900 min-h-screen">
+      <div className="flex flex-col items-center justify-center h-[70vh]">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+        <p className="text-gray-700 dark:text-gray-300">Redirecting to dashboard...</p>
       </div>
     </div>
   );
