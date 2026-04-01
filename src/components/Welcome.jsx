@@ -1,10 +1,21 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChevronRight, X, CheckCircle, Zap, Shield, BarChart3 } from "lucide-react";
+import { isOnboardingComplete } from "../utils/onboardingUtils";
 
 export default function Welcome() {
   const navigate = useNavigate();
   const [currentSlide, setCurrentSlide] = useState(0);
+
+  useEffect(() => {
+    const checkOnboarding = async () => {
+      const complete = await isOnboardingComplete();
+      if (complete) {
+        navigate("/school-dashboard", { replace: true });
+      }
+    };
+    checkOnboarding();
+  }, [navigate]);
 
   const slides = [
     {
@@ -13,8 +24,8 @@ export default function Welcome() {
       headline: "Welcome to Scoorla",
       description:
         "Transform how you manage student results. Scoorla makes result processing faster, easier, and more accurate for schools across Nigeria.",
-      color: "from-blue-500 to-blue-600",
       bgColor: "bg-blue-50 dark:bg-blue-900/20",
+      iconColor: "text-blue-600 dark:text-blue-300",
     },
     {
       id: 2,
@@ -22,8 +33,8 @@ export default function Welcome() {
       headline: "Process Results Instantly",
       description:
         "Say goodbye to manual calculations and spreadsheets. Scoorla automatically calculates scores, grades, and rankings in seconds—saving you hours of work every term.",
-      color: "from-amber-500 to-orange-600",
       bgColor: "bg-amber-50 dark:bg-amber-900/20",
+      iconColor: "text-amber-600 dark:text-amber-300",
     },
     {
       id: 3,
@@ -31,8 +42,8 @@ export default function Welcome() {
       headline: "Secure Your School Data",
       description:
         "Your school's data is protected with enterprise-grade security. All student records are encrypted and backed up automatically for peace of mind.",
-      color: "from-green-500 to-emerald-600",
       bgColor: "bg-green-50 dark:bg-green-900/20",
+      iconColor: "text-green-600 dark:text-green-300",
     },
     {
       id: 4,
@@ -40,8 +51,8 @@ export default function Welcome() {
       headline: "Ready to Get Started?",
       description:
         "Set up your school profile in minutes and start using Scoorla today. We're here to guide you every step of the way.",
-      color: "from-purple-500 to-pink-600",
       bgColor: "bg-purple-50 dark:bg-purple-900/20",
+      iconColor: "text-purple-600 dark:text-purple-300",
     },
   ];
 
@@ -87,7 +98,7 @@ export default function Welcome() {
           <div className="mb-12 animate-fadeIn">
             {/* Icon Container */}
             <div className={`${slide.bgColor} w-24 h-24 mx-auto mb-8 rounded-full p-6 flex items-center justify-center transition-all duration-300`}>
-              <Icon className={`w-12 h-12 text-transparent bg-gradient-to-r ${slide.color} bg-clip-text`} />
+              <Icon className={`w-12 h-12 ${slide.iconColor}`} />
             </div>
 
             {/* Headline */}
@@ -102,18 +113,18 @@ export default function Welcome() {
           </div>
 
           {/* Action Buttons */}
-          <div className="flex gap-3 md:gap-4 mb-8">
+          <div className="flex gap-3 md:gap-4 mb-8 ">
             {currentSlide > 0 && (
               <button
                 onClick={() => goToSlide(currentSlide - 1)}
-                className="flex-1 px-6 py-3 border-2 border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-semibold rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                className="flex-1 px-6 py-2 border-2 border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-semibold rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
               >
                 Back
               </button>
             )}
             <button
               onClick={handleNext}
-              className="flex-1 md:flex-none px-8 py-3 bg-gradient-to-r from-blue-800 to-blue-900 dark:from-blue-700 dark:to-blue-800 text-white font-semibold rounded-lg hover:shadow-lg transition-all duration-200 flex items-center justify-center gap-2"
+              className="flex-1  px-8 py-2 bg-blue-800 btn text-white font-semibold rounded-lg hover:shadow-lg transition-all duration-200 flex items-center justify-center gap-2"
             >
               {currentSlide === slides.length - 1 ? (
                 <>

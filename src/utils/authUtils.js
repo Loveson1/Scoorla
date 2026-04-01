@@ -16,18 +16,15 @@ import {
 } from "firebase/firestore";
 import {
   endUserSession,
-  getSelectedRole as getSelectedRoleFromSession,
-  clearSessionState,
-  getSelectedClass as getSelectedClassFromSession,
-  setSelectedClass as setSelectedClassInSession,
-  getSelectedSubject as getSelectedSubjectFromSession,
-  setSelectedSubject as setSelectedSubjectInSession,
+  clearAllSessionState,
 } from "./userSession";
 import {
-  verifyTeacherAccess,
-  createClassAccessCode,
-  createSubjectAccessCode,
-} from "./teacherCodes";
+  ensureUserScope,
+  setCachedUserScope,
+} from "./userScopeCache";
+import { clearDataCache } from "../services/dataCache";
+
+const schoolCacheKey = (userId) => `cached_school_id_${userId}`;
 
 /**
  * Listen for authentication state changes
@@ -53,14 +50,20 @@ export const subscribeToAuthChanges = (callback) => {
  * @returns {Promise<void>}
  */
 export const logoutUser = async () => {
-  try {
-    const userId = auth.currentUser?.uid;
-    if (userId) {
-      // Use endUserSession to cleanup Firestore + sessionStorage
+  const userId = auth.currentUser?.uid;
+  if (userId) {
+    try {
+      // Best-effort telemetry/session cleanup.
       await endUserSession(userId);
+    } catch (sessionError) {
+      console.warn("Session cleanup failed during logout:", sessionError);
     }
-    
-    // Sign out from Firebase
+  }
+
+  clearDataCache();
+  clearAllSessionState();
+
+  try {
     await signOut(auth);
   } catch (error) {
     console.error("Error signing out:", error);
@@ -75,16 +78,7 @@ export const logoutUser = async () => {
  * @returns {Promise<Object>} User credential object
  */
 export const registerUser = async (email, password) => {
-  try {
-    const userCredential = await createUserWithEmailAndPassword(
-      auth,
-      email,
-      password
-    );
-    return userCredential;
-  } catch (error) {
-    throw error;
-  }
+  return createUserWithEmailAndPassword(auth, email, password);
 };
 
 /**
@@ -94,16 +88,7 @@ export const registerUser = async (email, password) => {
  * @returns {Promise<Object>} User credential object
  */
 export const loginUser = async (email, password) => {
-  try {
-    const userCredential = await signInWithEmailAndPassword(
-      auth,
-      email,
-      password
-    );
-    return userCredential;
-  } catch (error) {
-    throw error;
-  }
+  return signInWithEmailAndPassword(auth, email, password);
 };
 
 /**
@@ -112,11 +97,7 @@ export const loginUser = async (email, password) => {
  * @returns {Promise<void>}
  */
 export const resetPassword = async (email) => {
-  try {
-    await sendPasswordResetEmail(auth, email);
-  } catch (error) {
-    throw error;
-  }
+  await sendPasswordResetEmail(auth, email);
 };
 
 /**
@@ -190,13 +171,27 @@ export const checkEmailVerification = async () => {
     if (!user) {
       return false;
     }
-    
+
+    // Avoid forcing verification failure while offline.
+    // Use cached auth state and only refresh when network is available.
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      return !!user.emailVerified;
+    }
+
     // Reload user to get latest emailVerified status from Firebase
     await reload(user);
-    return user.emailVerified;
+    return !!user.emailVerified;
   } catch (error) {
+    const code = String(error?.code || "");
+    if (
+      code.includes("network-request-failed") ||
+      code.includes("unavailable")
+    ) {
+      // On transient network failures, keep the cached auth claim.
+      return !!auth.currentUser?.emailVerified;
+    }
     console.error("Error checking email verification:", error);
-    return false;
+    return !!auth.currentUser?.emailVerified;
   }
 };
 
@@ -216,14 +211,44 @@ export const isEmailVerified = () => {
  */
 export const getUserRole = async (userId) => {
   try {
-    const userDoc = await getDoc(doc(firestore, "users", userId));
-    if (userDoc.exists()) {
-      return userDoc.data().role || null;
-    }
-    return null;
+    const scope = await ensureUserScope(userId, {
+      screen: "AuthUtils",
+      action: "get_user_role",
+    });
+    return scope?.role || null;
   } catch (error) {
     console.error("Error getting user role:", error);
     return null;
+  }
+};
+
+/**
+ * Backward-compatible no-op.
+ * RTDB mirror syncing is deprecated after Firestore migration.
+ * @param {string} uid
+ * @param {{schoolId?: string|null, role?: string|null, email?: string|null}} profile
+ * @returns {Promise<void>}
+ */
+export const upsertRtdbUserAccessProfile = async (uid, profile = {}) => {
+  void uid;
+  void profile;
+};
+
+/**
+ * Validate Firestore user profile presence.
+ * @param {string} uid
+ * @returns {Promise<void>}
+ */
+export const syncUserAccessProfile = async (uid) => {
+  try {
+    if (!uid) return;
+    return await ensureUserScope(uid, {
+      screen: "AuthUtils",
+      action: "sync_user_access_profile",
+    });
+  } catch (error) {
+    console.error("Error syncing user access profile:", error);
+    throw error;
   }
 };
 
@@ -244,14 +269,33 @@ export const isAdmin = async (userId) => {
  */
 export const getUserSchoolId = async (userId) => {
   try {
-    const userDoc = await getDoc(doc(firestore, "users", userId));
-    if (userDoc.exists()) {
-      return userDoc.data().schoolId || null;
+    const scope = await ensureUserScope(userId, {
+      screen: "AuthUtils",
+      action: "get_user_school_id",
+    });
+    if (scope?.schoolId) {
+      const schoolId = scope.schoolId || null;
+      if (schoolId) {
+        try {
+          localStorage.setItem(schoolCacheKey(userId), String(schoolId));
+        } catch (storageError) {
+          void storageError;
+        }
+      }
+      return schoolId;
     }
-    return null;
+    try {
+      return localStorage.getItem(schoolCacheKey(userId)) || null;
+    } catch {
+      return null;
+    }
   } catch (error) {
     console.error("Error getting user school ID:", error);
-    return null;
+    try {
+      return localStorage.getItem(schoolCacheKey(userId)) || null;
+    } catch {
+      return null;
+    }
   }
 };
 
@@ -284,146 +328,22 @@ export const setUserRole = async (userId, role, schoolId) => {
         roleUpdatedAt: new Date().toISOString(),
       });
     }
+
+    setCachedUserScope(userId, {
+      role,
+      schoolId,
+      email: auth.currentUser?.email,
+    });
+
+    if (schoolId) {
+      try {
+        localStorage.setItem(schoolCacheKey(userId), String(schoolId));
+      } catch (storageError) {
+        void storageError;
+      }
+    }
   } catch (error) {
     console.error("Error setting user role:", error);
     throw error;
   }
-};
-
-/**
- * Get selected role from userSession
- * Uses sessionStorage (temporary, expires on tab close)
- * @param {string} userId - Firebase user ID
- * @returns {string|null} Selected role or null
- */
-export const getSelectedRole = (userId) => {
-  return getSelectedRoleFromSession(userId);
-};
-
-/**
- * Clear selected role from sessionStorage
- * @param {string} userId - Firebase user ID
- */
-export const clearSelectedRole = (userId) => {
-  clearSessionState(`selectedRole_${userId}`);
-};
-
-/**
- * Verify teacher access with code
- * Uses Firebase-stored hashed codes
- * @param {string} schoolId - School ID
- * @param {string} code - Access code to verify
- * @param {string} type - Type: 'class' or 'subject'
- * @param {string} classId - Class ID
- * @param {string} subjectId - Subject ID (required if type='subject')
- * @returns {Promise<Object|null>} Code data if valid, null if invalid
- */
-export const validateClassPassword = async (schoolId, code, classId, subjectId = undefined) => {
-  try {
-    return await verifyTeacherAccess(schoolId, code, subjectId ? 'subject' : 'class', classId, subjectId);
-  } catch (error) {
-    console.error("Error validating code:", error);
-    return null;
-  }
-};
-
-/**
- * Create new class access code
- * Shows plain code once, stores hashed in database
- * @param {string} schoolId - School ID
- * @param {string} classId - Class ID
- * @returns {Promise<{plainCode: string, codeId: string}>} Plain code and code ID
- */
-export const setClassPassword = async (schoolId, classId) => {
-  try {
-    return await createClassAccessCode(schoolId, classId);
-  } catch (error) {
-    console.error("Error creating class code:", error);
-    throw error;
-  }
-};
-
-/**
- * Verify subject access with code
- * Uses Firebase-stored hashed codes
- * @param {string} schoolId - School ID
- * @param {string} code - Access code to verify
- * @param {string} classId - Class ID
- * @param {string} subjectId - Subject ID
- * @returns {Promise<Object|null>} Code data if valid, null if invalid
- */
-export const validateSubjectPassword = async (schoolId, code, classId, subjectId) => {
-  try {
-    return await verifyTeacherAccess(schoolId, code, 'subject', classId, subjectId);
-  } catch (error) {
-    console.error("Error validating subject code:", error);
-    return null;
-  }
-};
-
-/**
- * Create new subject access code
- * Shows plain code once, stores hashed in database
- * @param {string} schoolId - School ID
- * @param {string} classId - Class ID
- * @param {string} subjectId - Subject ID
- * @returns {Promise<{plainCode: string, codeId: string}>} Plain code and code ID
- */
-export const setSubjectPassword = async (schoolId, classId, subjectId) => {
-  try {
-    return await createSubjectAccessCode(schoolId, classId, subjectId);
-  } catch (error) {
-    console.error("Error creating subject code:", error);
-    throw error;
-  }
-};
-
-/**
- * Get teacher's selected class from sessionStorage
- * @param {string} userId - Firebase user ID
- * @returns {string|null} Selected class ID or null
- */
-export const getSelectedClass = (userId) => {
-  return getSelectedClassFromSession(userId);
-};
-
-/**
- * Set teacher's selected class in sessionStorage
- * @param {string} userId - Firebase user ID
- * @param {string} classId - Class ID to set
- */
-export const setSelectedClass = (userId, classId) => {
-  setSelectedClassInSession(userId, classId);
-};
-
-/**
- * Get teacher's selected subject from sessionStorage
- * @param {string} userId - Firebase user ID
- * @returns {string|null} Selected subject ID or null
- */
-export const getSelectedSubject = (userId) => {
-  return getSelectedSubjectFromSession(userId);
-};
-
-/**
- * Set teacher's selected subject in sessionStorage
- * @param {string} userId - Firebase user ID
- * @param {string} subjectId - Subject ID to set
- */
-export const setSelectedSubject = (userId, subjectId) => {
-  setSelectedSubjectInSession(userId, subjectId);
-};
-
-/**
- * Generate a random password
- * @param {number} length - Password length (default: 8)
- * @returns {string}
- */
-export const generatePassword = (length = 8) => {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  let password = "";
-  for (let i = 0; i < length; i++) {
-    password += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return password;
 };

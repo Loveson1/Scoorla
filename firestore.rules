@@ -1,171 +1,1024 @@
-/**
- * Scoorla - Firebase Firestore Security Rules
- * 
- * Enforces:
- * - Strict role-based access control
- * - No cross-school data access
- * - Admin-only system operations
- * - Teacher access limited to assigned content
- * - Validated access codes for class/subject teachers
- */
-
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // ============ HELPER FUNCTIONS ============
-    
-    // Get current user ID
-    function currentUser() {
-      return request.auth.uid;
-    }
-    
-    // Check if user is authenticated
-    function isAuthenticated() {
+    function isSignedIn() {
       return request.auth != null;
     }
-    
-    // Get user's role from users document
-    function getUserRole() {
-      return get(/databases/$(database)/documents/users/$(currentUser())).data.role;
+
+    function hasPlatformUserDoc() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/platformUsers/$(request.auth.uid));
     }
-    
-    // Get user's schoolId from users document
-    function getUserSchoolId() {
-      return get(/databases/$(database)/documents/users/$(currentUser())).data.schoolId;
+
+    function platformUserData() {
+      return get(/databases/$(database)/documents/platformUsers/$(request.auth.uid)).data;
     }
-    
-    // Check if user is admin
+
+    function isSuperAdmin() {
+      return hasPlatformUserDoc() && platformUserData().role == "super_admin";
+    }
+
+    function hasUserDoc() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function userRole() {
+      return hasUserDoc() ? userData().role : null;
+    }
+
+    function roleMatches(pattern) {
+      return userRole() is string && userRole().matches(pattern);
+    }
+
+    function userIsActive() {
+      return hasUserDoc() && userData().isActive != false;
+    }
+
+    function userSchoolId() {
+      return hasUserDoc() ? userData().schoolId : null;
+    }
+
     function isAdmin() {
-      return getUserRole() == 'admin';
+      return userIsActive() && roleMatches("(?i)^admin$");
     }
-    
-    // Check if user is class teacher
-    function isClassTeacher() {
-      return getUserRole() == 'class_teacher';
+
+    function isTeacher() {
+      return userIsActive() &&
+        (
+          roleMatches("(?i)^class_teacher$") ||
+          roleMatches("(?i)^subject_teacher$") ||
+          roleMatches("(?i)^class_subject_teacher$") ||
+          roleMatches("(?i)^teacher$")
+        );
     }
-    
-    // Check if user is subject teacher
-    function isSubjectTeacher() {
-      return getUserRole() == 'subject_teacher';
+
+    function hasAssignedClass(classId) {
+      return isTeacher() &&
+        classId is string &&
+        (
+          (
+            userData().assignedClassTokens is list &&
+            (
+              (
+                classId.matches("(?i)^jss[\\s_-]*1$") &&
+                userData().assignedClassTokens.hasAny(["jss1"])
+              ) ||
+              (
+                classId.matches("(?i)^jss[\\s_-]*2$") &&
+                userData().assignedClassTokens.hasAny(["jss2"])
+              ) ||
+              (
+                classId.matches("(?i)^jss[\\s_-]*3$") &&
+                userData().assignedClassTokens.hasAny(["jss3"])
+              ) ||
+              (
+                classId.matches("(?i)^sss[\\s_-]*1$") &&
+                userData().assignedClassTokens.hasAny(["sss1"])
+              ) ||
+              (
+                classId.matches("(?i)^sss[\\s_-]*2$") &&
+                userData().assignedClassTokens.hasAny(["sss2"])
+              ) ||
+              (
+                classId.matches("(?i)^sss[\\s_-]*3$") &&
+                userData().assignedClassTokens.hasAny(["sss3"])
+              )
+            )
+          ) ||
+          (
+            userData().assignedClasses is list &&
+            (
+              userData().assignedClasses.hasAny([classId]) ||
+              (
+                classId.matches("(?i)^jss[\\s_-]*1$") &&
+                userData().assignedClasses.hasAny(["jss1", "JSS 1", "jss 1", "JSS1"])
+              ) ||
+              (
+                classId.matches("(?i)^jss[\\s_-]*2$") &&
+                userData().assignedClasses.hasAny(["jss2", "JSS 2", "jss 2", "JSS2"])
+              ) ||
+              (
+                classId.matches("(?i)^jss[\\s_-]*3$") &&
+                userData().assignedClasses.hasAny(["jss3", "JSS 3", "jss 3", "JSS3"])
+              ) ||
+              (
+                classId.matches("(?i)^sss[\\s_-]*1$") &&
+                userData().assignedClasses.hasAny(["sss1", "SSS 1", "sss 1", "SSS1"])
+              ) ||
+              (
+                classId.matches("(?i)^sss[\\s_-]*2$") &&
+                userData().assignedClasses.hasAny(["sss2", "SSS 2", "sss 2", "SSS2"])
+              ) ||
+              (
+                classId.matches("(?i)^sss[\\s_-]*3$") &&
+                userData().assignedClasses.hasAny(["sss3", "SSS 3", "sss 3", "SSS3"])
+              )
+            )
+          )
+        );
     }
-    
-    // Check if user belongs to same school
-    function isSameSchool(schoolId) {
-      return getUserSchoolId() == schoolId;
+
+    function hasAssignedSubject(subjectId) {
+      return isTeacher() &&
+        subjectId is string &&
+        (
+          (
+            userData().assignedSubjectTokens is list &&
+            userData().assignedSubjectTokens.hasAny([subjectId])
+          ) ||
+          (
+            userData().assignedSubjectKeys is list &&
+            userData().assignedSubjectKeys.hasAny([subjectId])
+          ) ||
+          (
+            userData().assignedSubjects is list &&
+            (
+              userData().assignedSubjects.hasAny([subjectId]) ||
+              (
+                (
+                  subjectId.matches("(?i)^basic\\s+science((\\s+and\\s+|\\s*&\\s*)technology)?$") ||
+                  subjectId.matches("(?i)^.*basic_science_and_technology.*$")
+                ) &&
+                userData().assignedSubjects.hasAny([
+                  "Basic Science",
+                  "Basic Science and Technology",
+                  "Basic Science & Technology",
+                  "basic science",
+                  "basic science and technology",
+                  "basic science & technology"
+                ])
+              )
+            )
+          ) ||
+          (
+            userData().assignedSubjectTokens is list &&
+            (
+              subjectId.matches("(?i)^basic\\s+science((\\s+and\\s+|\\s*&\\s*)technology)?$") ||
+              subjectId.matches("(?i)^.*basic_science_and_technology.*$")
+            ) &&
+            userData().assignedSubjectTokens.hasAny(["basic_science_and_technology"])
+          )
+        );
     }
-    
-    // ============ USER DOCUMENTS ============
-    
+
+    function requestScoreClassValue() {
+      return request.resource.data.classId is string
+        ? request.resource.data.classId
+        : request.resource.data.class is string
+          ? request.resource.data.class
+          : null;
+    }
+
+    function requestScoreSubjectValue() {
+      return request.resource.data.subjectId is string
+        ? request.resource.data.subjectId
+        : request.resource.data.subject is string
+          ? request.resource.data.subject
+          : null;
+    }
+
+    function legacyScoreInUserSchool() {
+      return !(resource.data.schoolId is string) &&
+        resource.data.sessionId is string &&
+        exists(/databases/$(database)/documents/sessions/$(resource.data.sessionId)) &&
+        get(/databases/$(database)/documents/sessions/$(resource.data.sessionId)).data.schoolId == userSchoolId();
+    }
+
+    function legacyLtcCacheInUserSchool() {
+      return !(resource.data.schoolId is string) &&
+        resource.data.sessionId is string &&
+        exists(/databases/$(database)/documents/sessions/$(resource.data.sessionId)) &&
+        get(/databases/$(database)/documents/sessions/$(resource.data.sessionId)).data.schoolId == userSchoolId();
+    }
+
+    function ltcCacheClassValue() {
+      return resource.data.classToken is string
+        ? resource.data.classToken
+        : resource.data.classId is string
+          ? resource.data.classId
+          : resource.data.class is string
+            ? resource.data.class
+            : null;
+    }
+
+    function ltcCacheSubjectValue() {
+      return resource.data.subjectToken is string
+        ? resource.data.subjectToken
+        : resource.data.subjectId is string
+          ? resource.data.subjectId
+          : resource.data.subject is string
+            ? resource.data.subject
+            : null;
+    }
+
+    function isClassTeacherRole() {
+      return roleMatches("(?i)^class_teacher$") ||
+        roleMatches("(?i)^class_subject_teacher$") ||
+        roleMatches("(?i)^teacher$");
+    }
+
+    function isSubjectTeacherRole() {
+      return roleMatches("(?i)^subject_teacher$") ||
+        roleMatches("(?i)^class_subject_teacher$") ||
+        roleMatches("(?i)^teacher$");
+    }
+
+    function scoreMatchesTeacherCanonicalClassScope() {
+      return userData().assignedClassTokens is list &&
+        (
+          (
+            resource.data.classId is string &&
+            userData().assignedClassTokens.hasAny([resource.data.classId])
+          ) ||
+          (
+            resource.data.classToken is string &&
+            userData().assignedClassTokens.hasAny([resource.data.classToken])
+          )
+        );
+    }
+
+    function scoreReadClassValue() {
+      return resource.data.classToken is string
+        ? resource.data.classToken
+        : resource.data.classId is string
+          ? resource.data.classId
+          : resource.data.class is string
+            ? resource.data.class
+            : null;
+    }
+
+    function scoreReadSubjectValue() {
+      return resource.data.subjectToken is string
+        ? resource.data.subjectToken
+        : resource.data.subjectId is string
+          ? resource.data.subjectId
+          : resource.data.subject is string
+            ? resource.data.subject
+            : null;
+    }
+
+    function scoreMatchesTeacherCanonicalSubjectScope() {
+      return (isClassTeacherRole() && !isSubjectTeacherRole()) ||
+        (
+          resource.data.subjectToken is string &&
+          userData().assignedSubjectTokens is list &&
+          userData().assignedSubjectTokens.hasAny([resource.data.subjectToken])
+        );
+    }
+
+    function teacherCanReadScoreRecord() {
+      return isTeacher() &&
+        (existingInUserSchool() || legacyScoreInUserSchool()) &&
+        (
+          scoreMatchesTeacherCanonicalClassScope() ||
+          hasAssignedClass(scoreReadClassValue())
+        ) &&
+        (
+          scoreMatchesTeacherCanonicalSubjectScope() ||
+          hasAssignedSubject(scoreReadSubjectValue())
+        );
+    }
+
+    function scoreUpdateStaysInUserSchool() {
+      return (existingInUserSchool() || legacyScoreInUserSchool()) &&
+        request.resource.data.schoolId is string &&
+        sameSchool(request.resource.data.schoolId);
+    }
+
+    function requestHasAssignedClassScope() {
+      return (
+        request.resource.data.classToken is string &&
+        userData().assignedClassTokens is list &&
+        userData().assignedClassTokens.hasAny([request.resource.data.classToken])
+      ) ||
+      hasAssignedClass(requestScoreClassValue());
+    }
+
+    function requestHasAssignedSubjectScope() {
+      return (
+        request.resource.data.subjectToken is string &&
+        userData().assignedSubjectTokens is list &&
+        userData().assignedSubjectTokens.hasAny([request.resource.data.subjectToken])
+      ) ||
+      (
+        request.resource.data.subjectId is string &&
+        userData().assignedSubjectKeys is list &&
+        userData().assignedSubjectKeys.hasAny([request.resource.data.subjectId])
+      ) ||
+      hasAssignedSubject(requestScoreSubjectValue());
+    }
+
+    function scoreDocIdMatchesRequest(scoreId) {
+      return request.resource.data.scoreId is string &&
+        request.resource.data.scoreId == scoreId;
+    }
+
+    function teacherScoreRequestAllowed(scoreId) {
+      return canRecordScores() &&
+        request.resource.data.schoolId is string &&
+        sameSchool(request.resource.data.schoolId) &&
+        requestHasAssignedClassScope() &&
+        requestHasAssignedSubjectScope() &&
+        scoreDocIdMatchesRequest(scoreId) &&
+        isConfiguredActiveSession(request.resource.data.sessionId) &&
+        isConfiguredActiveTermContext(request.resource.data.termId, request.resource.data.termDocId);
+    }
+
+    function scoreMetadataNormalizationAllowed() {
+      return isAdmin() &&
+        (existingInUserSchool() || legacyScoreInUserSchool()) &&
+        (
+          !(resource.data.schoolId is string) ||
+          !(resource.data.classId is string) ||
+          !(resource.data.subjectId is string) ||
+          !(resource.data.sessionId is string) ||
+          !(resource.data.termId is string) ||
+          !(
+            isConfiguredActiveSession(resource.data.sessionId) &&
+            isConfiguredActiveTermContext(resource.data.termId, resource.data.termDocId)
+          )
+        ) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          "schoolId",
+          "classId",
+          "subjectId",
+          "sessionId",
+          "termId",
+          "termDocId",
+          "studentId",
+          "enrollmentId",
+          "scoreId"
+        ]);
+    }
+
+    function isStaff() {
+      return isAdmin() || isTeacher();
+    }
+
+    function canManageClassRoster() {
+      return userIsActive() &&
+        (
+          roleMatches("(?i)^admin$") ||
+          roleMatches("(?i)^class_teacher$") ||
+          roleMatches("(?i)^class_subject_teacher$") ||
+          roleMatches("(?i)^teacher$")
+        );
+    }
+
+    function canRecordScores() {
+      return userIsActive() &&
+        (
+          roleMatches("(?i)^admin$") ||
+          roleMatches("(?i)^subject_teacher$") ||
+          roleMatches("(?i)^class_subject_teacher$") ||
+          roleMatches("(?i)^teacher$")
+        );
+    }
+
+    function validRole(role) {
+      return role in ["admin", "class_teacher", "subject_teacher", "class_subject_teacher"];
+    }
+
+    function hasUserSchoolSettings() {
+      return userSchoolId() is string &&
+        exists(/databases/$(database)/documents/settings/$(userSchoolId()));
+    }
+
+    function userSchoolSettings() {
+      return get(/databases/$(database)/documents/settings/$(userSchoolId())).data;
+    }
+
+    function termAliasFromDocId(termDocId) {
+      return termDocId is string &&
+        exists(/databases/$(database)/documents/terms/$(termDocId)) &&
+        get(/databases/$(database)/documents/terms/$(termDocId)).data.schoolId == userSchoolId()
+          ? get(/databases/$(database)/documents/terms/$(termDocId)).data.alias
+          : null;
+    }
+
+    function sessionIdFromDocId(sessionDocId) {
+      return sessionDocId is string &&
+        exists(/databases/$(database)/documents/sessions/$(sessionDocId)) &&
+        get(/databases/$(database)/documents/sessions/$(sessionDocId)).data.schoolId == userSchoolId()
+          ? get(/databases/$(database)/documents/sessions/$(sessionDocId)).data.sessionId
+          : null;
+    }
+
+    function sessionNameFromDocId(sessionDocId) {
+      return sessionDocId is string &&
+        exists(/databases/$(database)/documents/sessions/$(sessionDocId)) &&
+        get(/databases/$(database)/documents/sessions/$(sessionDocId)).data.schoolId == userSchoolId()
+          ? get(/databases/$(database)/documents/sessions/$(sessionDocId)).data.name
+          : null;
+    }
+
+    function isConfiguredActiveSession(sessionId) {
+      return sessionId is string &&
+        hasUserSchoolSettings() &&
+        (
+          userSchoolSettings().activeSessionId == sessionId ||
+          sessionIdFromDocId(userSchoolSettings().activeSessionId) == sessionId ||
+          sessionNameFromDocId(sessionId) == userSchoolSettings().activeSessionId
+        );
+    }
+
+    function isConfiguredActiveTerm(termId) {
+      return termId is string &&
+        hasUserSchoolSettings() &&
+        (
+          userSchoolSettings().activeTermId == termId ||
+          termAliasFromDocId(userSchoolSettings().activeTermId) == termId ||
+          termAliasFromDocId(userSchoolSettings().activeTermDocId) == termId
+        );
+    }
+
+    function isConfiguredActiveTermDoc(termDocId) {
+      return termDocId is string &&
+        hasUserSchoolSettings() &&
+        (
+          userSchoolSettings().activeTermDocId == termDocId ||
+          userSchoolSettings().activeTermId == termDocId
+        );
+    }
+
+    function isConfiguredActiveTermContext(termId, termDocId) {
+      return isConfiguredActiveTerm(termId) ||
+        isConfiguredActiveTermDoc(termDocId);
+    }
+
+    // Legacy bridge for migrated session docs that may miss schoolId.
+    // Scope is intentionally narrow: only the currently active session for this school.
+    function isLegacyActiveSessionForUserSchool(sessionId) {
+      return isConfiguredActiveSession(sessionId);
+    }
+
+    function sameSchool(schoolId) {
+      return hasUserDoc() && schoolId is string && userSchoolId() == schoolId;
+    }
+
+    function createInUserSchool() {
+      return request.resource.data.schoolId is string &&
+        sameSchool(request.resource.data.schoolId);
+    }
+
+    function existingInUserSchool() {
+      return resource.data.schoolId is string &&
+        sameSchool(resource.data.schoolId);
+    }
+
+    function updateStaysInUserSchool() {
+      return existingInUserSchool() &&
+        request.resource.data.schoolId == resource.data.schoolId;
+    }
+
+    function sessionIsEditable(sessionId) {
+      return sessionId is string &&
+        exists(/databases/$(database)/documents/sessions/$(sessionId)) &&
+        (
+          get(/databases/$(database)/documents/sessions/$(sessionId)).data.schoolId == userSchoolId() ||
+          isLegacyActiveSessionForUserSchool(sessionId)
+        ) &&
+        get(/databases/$(database)/documents/sessions/$(sessionId)).data.isArchived != true &&
+        get(/databases/$(database)/documents/sessions/$(sessionId)).data.isEditable != false;
+    }
+
+    function sessionIsWritableForSettings(sessionId) {
+      return sessionId is string &&
+        exists(/databases/$(database)/documents/sessions/$(sessionId)) &&
+        get(/databases/$(database)/documents/sessions/$(sessionId)).data.schoolId == userSchoolId() &&
+        get(/databases/$(database)/documents/sessions/$(sessionId)).data.isArchived != true &&
+        get(/databases/$(database)/documents/sessions/$(sessionId)).data.isEditable != false;
+    }
+
+    function activeTermPointerMatchesSession(sessionId, termDocId, termToken) {
+      return termDocId is string &&
+        exists(/databases/$(database)/documents/terms/$(termDocId)) &&
+        get(/databases/$(database)/documents/terms/$(termDocId)).data.schoolId == userSchoolId() &&
+        get(/databases/$(database)/documents/terms/$(termDocId)).data.sessionId == sessionId &&
+        (
+          get(/databases/$(database)/documents/terms/$(termDocId)).data.isEditable == true ||
+          !("isEditable" in get(/databases/$(database)/documents/terms/$(termDocId)).data)
+        ) &&
+        (
+          termToken == get(/databases/$(database)/documents/terms/$(termDocId)).data.alias ||
+          termToken == termDocId
+        );
+    }
+
+    function adminSettingsPointersAreSafeStrict() {
+      return request.resource.data.activeSessionId is string &&
+        request.resource.data.activeTermId is string &&
+        request.resource.data.activeTermDocId is string &&
+        sessionIsWritableForSettings(request.resource.data.activeSessionId) &&
+        activeTermPointerMatchesSession(
+          request.resource.data.activeSessionId,
+          request.resource.data.activeTermDocId,
+          request.resource.data.activeTermId
+        );
+    }
+
+    function adminSettingsPointersAreSafeOnUpdate() {
+      return adminSettingsPointersAreSafeStrict() ||
+        (
+          resource.data.activeSessionId is string &&
+          resource.data.activeTermId is string &&
+          request.resource.data.activeSessionId == resource.data.activeSessionId &&
+          request.resource.data.activeTermId == resource.data.activeTermId &&
+          sessionIsWritableForSettings(request.resource.data.activeSessionId) &&
+          (
+            !(resource.data.activeTermDocId is string) ||
+            request.resource.data.activeTermDocId == resource.data.activeTermDocId
+          )
+        );
+    }
+
     match /users/{userId} {
-      // Users can read their own document
-      allow read: if isAuthenticated() && currentUser() == userId;
-      
-      // Users can write to their own document (limited fields)
-      allow write: if isAuthenticated() && currentUser() == userId && 
-        request.resource.data.keys().hasOnly(['role', 'schoolId', 'email', 'roleUpdatedAt', 'createdAt', 'onboardingComplete']);
-      
-      // Only admins can read all user data in their school (for reports, etc.)
-      allow read: if isAuthenticated() && isAdmin() && isSameSchool(resource.data.schoolId);
-      
-      // Nested onboarding subcollection
-      match /onboarding/{document=**} {
-        allow read, write: if isAuthenticated() && currentUser() == userId;
-      }
+      allow read: if isSuperAdmin() ||
+        (
+          isSignedIn() &&
+          (
+            request.auth.uid == userId ||
+            (isAdmin() && resource.data.schoolId == userSchoolId())
+          )
+        );
+
+      allow create: if isSignedIn() &&
+        (
+          (
+            request.auth.uid == userId &&
+            validRole(request.resource.data.role) &&
+            (
+              !("schoolId" in request.resource.data) ||
+              request.resource.data.schoolId is string
+            )
+          ) ||
+          (
+            isAdmin() &&
+            request.resource.data.schoolId == userSchoolId() &&
+            validRole(request.resource.data.role) &&
+            request.resource.data.role != "admin"
+          )
+        );
+
+      allow update: if isSignedIn() &&
+        (
+          (
+            request.auth.uid == userId &&
+            // Standard self-updates after onboarding: school and role remain fixed.
+            (
+              (
+                resource.data.schoolId is string &&
+                request.resource.data.schoolId == resource.data.schoolId &&
+                request.resource.data.role == resource.data.role
+              ) ||
+              // Legacy self-recovery: account has schoolId but missing role.
+              // Permit one-time repair to admin for same-school owner.
+              (
+                resource.data.schoolId is string &&
+                !(resource.data.role is string) &&
+                request.resource.data.schoolId == resource.data.schoolId &&
+                request.resource.data.role == "admin"
+              ) ||
+              // One-time onboarding bind: admin user without schoolId can set initial schoolId.
+              (
+                !(resource.data.schoolId is string) &&
+                request.resource.data.schoolId is string &&
+                (
+                  (
+                    ("role" in resource.data) &&
+                    resource.data.role == "admin" &&
+                    request.resource.data.role == "admin"
+                  ) ||
+                  (
+                    !("role" in resource.data) &&
+                    request.resource.data.role == "admin"
+                  )
+                )
+              )
+            )
+          ) ||
+          (
+            isAdmin() &&
+            resource.data.schoolId == userSchoolId() &&
+            request.resource.data.schoolId == resource.data.schoolId &&
+            validRole(request.resource.data.role) &&
+            request.resource.data.role != "admin"
+          )
+        );
+
+      allow delete: if false;
     }
-    
-    // ============ SCHOOL DOCUMENTS ============
-    
+
+    match /platformUsers/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isSuperAdmin());
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+    match /supportTickets/{ticketId} {
+      allow read, create, update: if isSuperAdmin();
+      allow delete: if false;
+    }
+
+    match /auditLogs/{logId} {
+      allow read, create: if isSuperAdmin();
+      allow update, delete: if false;
+    }
+
+    match /platformMeta/{docId} {
+      allow read, create, update: if isSuperAdmin();
+      allow delete: if false;
+    }
+
+    match /teacherCredentials/{credentialId} {
+      // Required for teacher login by School ID + Staff ID.
+      allow get: if true;
+      allow list: if false;
+
+      allow create, update: if isSuperAdmin() ||
+        (
+          isAdmin() &&
+          request.resource.data.schoolId == userSchoolId()
+        );
+
+      allow delete: if false;
+    }
+
     match /schools/{schoolId} {
-      // Only admins from this school can read/write
-      allow read: if isAuthenticated() && getUserSchoolId() == schoolId;
-      allow write: if isAuthenticated() && isAdmin() && getUserSchoolId() == schoolId;
-      
-      // ============ CLASS TEACHER ACCESS CODES ============
-      
-      match /accessCodes/classTeacherCodes/{classId} {
-        // Admins can read/write their school's access codes
-        allow read, write: if isAuthenticated() && isAdmin() && isSameSchool(schoolId);
-        
-        // Only validate on read (for class teachers accessing their class)
-        allow read: if isAuthenticated() && resource.data.schoolId == getUserSchoolId();
+      allow read: if isSuperAdmin() || sameSchool(schoolId);
+      allow write: if isSuperAdmin() || (isAdmin() && sameSchool(schoolId));
+
+      match /backups/{backupId} {
+        allow read: if isSuperAdmin() || (isAdmin() && sameSchool(schoolId));
+        allow create, update, delete: if isSuperAdmin() || (isAdmin() && sameSchool(schoolId));
+
+        match /{document=**} {
+          allow read: if isSuperAdmin() || (isAdmin() && sameSchool(schoolId));
+          allow create, update, delete: if isSuperAdmin() || (isAdmin() && sameSchool(schoolId));
+        }
       }
-      
-      // ============ SUBJECT TEACHER ACCESS CODES ============
-      
-      match /accessCodes/subjectTeacherCodes/{subjectId} {
-        // Admins can read/write their school's access codes
-        allow read, write: if isAuthenticated() && isAdmin() && isSameSchool(schoolId);
-        
-        // Only validate on read (for subject teachers accessing their subject)
-        allow read: if isAuthenticated() && resource.data.schoolId == getUserSchoolId();
+
+      match /auditLogs/{logId} {
+        allow read: if isAdmin() && sameSchool(schoolId);
+        allow create: if isStaff() &&
+          sameSchool(schoolId) &&
+          request.resource.data.schoolId == schoolId;
+        allow update, delete: if false;
       }
-      
-      // ============ CLASS DATA ============
-      
-      match /classes/{classId} {
-        // Admins: full access
-        allow read, write: if isAuthenticated() && isAdmin() && isSameSchool(schoolId);
-        
-        // Class teachers: read only their assigned class
-        allow read: if isAuthenticated() && isClassTeacher() && isSameSchool(schoolId);
-        
-        // ============ STUDENT DATA ============
-        
-        match /students/{studentId} {
-          // Admins: full access
-          allow read, write: if isAuthenticated() && isAdmin() && isSameSchool(schoolId);
-          
-          // Class teachers: read/write students in their class
-          allow read, write: if isAuthenticated() && isClassTeacher() && isSameSchool(schoolId);
-          
-          // Subject teachers: read only
-          allow read: if isAuthenticated() && isSubjectTeacher() && isSameSchool(schoolId);
-        }
-        
-        // ============ SUBJECT SCORES ============
-        
-        match /subjects/{subjectId} {
-          // Admins: full access
-          allow read, write: if isAuthenticated() && isAdmin() && isSameSchool(schoolId);
-          
-          // Class teachers: read all subjects
-          allow read: if isAuthenticated() && isClassTeacher() && isSameSchool(schoolId);
-          
-          // Subject teachers: read/write only their subject
-          // Note: actual subject filtering handled in application layer
-          allow read, write: if isAuthenticated() && isSubjectTeacher() && isSameSchool(schoolId);
-          
-          match /scores/{scoreId} {
-            // Admins: full access
-            allow read, write: if isAuthenticated() && isAdmin() && isSameSchool(schoolId);
-            
-            // Class teachers: read all scores
-            allow read: if isAuthenticated() && isClassTeacher() && isSameSchool(schoolId);
-            
-            // Subject teachers: read/write only their subject scores
-            allow read, write: if isAuthenticated() && isSubjectTeacher() && isSameSchool(schoolId);
-          }
-        }
-        
-        // ============ RESULTS ============
-        
-        match /results/{resultId} {
-          // Admins: full access
-          allow read, write: if isAuthenticated() && isAdmin() && isSameSchool(schoolId);
-          
-          // Class teachers: read only
-          allow read: if isAuthenticated() && isClassTeacher() && isSameSchool(schoolId);
-          
-          // Subject teachers: read only
-          allow read: if isAuthenticated() && isSubjectTeacher() && isSameSchool(schoolId);
-        }
+
+      match /restoreRequests/{requestId} {
+        allow read: if isSuperAdmin() || (isAdmin() && sameSchool(schoolId));
+        allow create: if isAdmin() &&
+          sameSchool(schoolId) &&
+          request.resource.data.schoolId == schoolId;
+        allow update: if isSuperAdmin();
+        allow delete: if false;
       }
     }
-    
-    // ============ BLOCK ALL OTHER PATHS ============
-    
-    // Deny all access to any other paths by default
+
+    match /settings/{schoolId} {
+      allow read: if isSuperAdmin() || sameSchool(schoolId);
+
+      allow create: if isSuperAdmin() ||
+        (
+          isAdmin() &&
+          sameSchool(schoolId) &&
+          request.resource.data.schoolId == schoolId &&
+          adminSettingsPointersAreSafeStrict()
+        );
+
+      allow update: if isSuperAdmin() ||
+        (
+          isAdmin() &&
+          sameSchool(schoolId) &&
+          request.resource.data.schoolId == schoolId &&
+          adminSettingsPointersAreSafeOnUpdate()
+        );
+
+      allow delete: if false;
+    }
+
+    match /sessions/{sessionId} {
+      allow read: if isSuperAdmin() ||
+        (
+          isStaff() &&
+          (
+            existingInUserSchool() ||
+            isLegacyActiveSessionForUserSchool(sessionId)
+          )
+        );
+
+      allow create: if isAdmin() && createInUserSchool();
+
+      allow update: if isAdmin() &&
+        updateStaysInUserSchool() &&
+        !(
+          resource.data.isArchived == true &&
+          request.resource.data.isArchived != true
+        ) &&
+        !(
+          resource.data.isEditable == false &&
+          request.resource.data.isEditable != false
+        );
+
+      allow delete: if false;
+    }
+
+    match /terms/{termId} {
+      allow read: if isSuperAdmin() || (isStaff() && existingInUserSchool());
+
+      allow create: if isAdmin() &&
+        createInUserSchool() &&
+        sessionIsEditable(request.resource.data.sessionId);
+
+      allow update: if isAdmin() &&
+        updateStaysInUserSchool() &&
+        sessionIsEditable(resource.data.sessionId) &&
+        sessionIsEditable(request.resource.data.sessionId);
+
+      allow delete: if false;
+    }
+
+    match /classes/{classId} {
+      allow read: if isSuperAdmin() ||
+        (
+          (isAdmin() && existingInUserSchool()) ||
+          (
+            isTeacher() &&
+            existingInUserSchool() &&
+            (
+              hasAssignedClass(resource.data.classId) ||
+              hasAssignedClass(classId)
+            )
+          )
+        );
+      allow create: if isAdmin() && createInUserSchool();
+      allow update: if isAdmin() && updateStaysInUserSchool();
+      allow delete: if isAdmin() && existingInUserSchool();
+    }
+
+    match /students/{studentId} {
+      allow read: if isSuperAdmin() || (isStaff() && existingInUserSchool());
+      // Class roster operations (add/edit/withdraw) for admins and class teachers in same school.
+      allow create: if canManageClassRoster() && createInUserSchool();
+      allow update: if canManageClassRoster() &&
+        (
+          updateStaysInUserSchool() ||
+          (
+            // Legacy bridge: permit first schoolId bind on old student docs missing schoolId.
+            !(resource.data.schoolId is string) &&
+            request.resource.data.schoolId is string &&
+            sameSchool(request.resource.data.schoolId)
+          )
+        );
+      allow delete: if canManageClassRoster() && existingInUserSchool();
+    }
+
+    match /subjects/{subjectId} {
+      allow read: if isSuperAdmin() ||
+        (
+          (isAdmin() && existingInUserSchool()) ||
+          (
+            isTeacher() &&
+            existingInUserSchool() &&
+            (
+              hasAssignedSubject(resource.data.subjectId) ||
+              hasAssignedSubject(subjectId)
+            )
+          )
+        );
+      allow create: if isAdmin() && createInUserSchool();
+      allow update: if isAdmin() && updateStaysInUserSchool();
+      allow delete: if isAdmin() && existingInUserSchool();
+    }
+
+    match /enrollments/{enrollmentId} {
+      allow read: if isSuperAdmin() ||
+        (
+          (isAdmin() && existingInUserSchool()) ||
+          (isTeacher() && existingInUserSchool() && hasAssignedClass(resource.data.classId))
+        );
+
+      allow create: if isSuperAdmin() ||
+        (
+          canManageClassRoster() &&
+          createInUserSchool() &&
+          (isAdmin() || hasAssignedClass(request.resource.data.classId)) &&
+          (
+            sessionIsEditable(request.resource.data.sessionId) ||
+            isConfiguredActiveSession(request.resource.data.sessionId)
+          )
+        );
+
+      allow update: if isSuperAdmin() ||
+        (
+          canManageClassRoster() &&
+          updateStaysInUserSchool() &&
+          (
+            isAdmin() ||
+            (
+              hasAssignedClass(resource.data.classId) &&
+              hasAssignedClass(request.resource.data.classId)
+            )
+          ) &&
+          (
+            sessionIsEditable(resource.data.sessionId) ||
+            isConfiguredActiveSession(resource.data.sessionId)
+          ) &&
+          (
+            sessionIsEditable(request.resource.data.sessionId) ||
+            isConfiguredActiveSession(request.resource.data.sessionId)
+          )
+        );
+
+      allow delete: if isSuperAdmin() ||
+        (
+          canManageClassRoster() &&
+          existingInUserSchool() &&
+          (isAdmin() || hasAssignedClass(resource.data.classId)) &&
+          (
+            sessionIsEditable(resource.data.sessionId) ||
+            isConfiguredActiveSession(resource.data.sessionId)
+          )
+        );
+    }
+
+    match /scores/{scoreId} {
+      allow read: if isSuperAdmin() ||
+        (
+          (isAdmin() && (existingInUserSchool() || legacyScoreInUserSchool())) ||
+          teacherCanReadScoreRecord()
+        );
+
+      allow create: if isSuperAdmin() ||
+        (
+          (
+            isAdmin() &&
+            canRecordScores() &&
+            createInUserSchool() &&
+            isConfiguredActiveSession(request.resource.data.sessionId) &&
+            isConfiguredActiveTermContext(request.resource.data.termId, request.resource.data.termDocId)
+          ) ||
+          (
+            isTeacher() &&
+            teacherScoreRequestAllowed(scoreId)
+          )
+        );
+
+      allow update: if isSuperAdmin() ||
+        (
+          (
+            isAdmin() &&
+            canRecordScores() &&
+            scoreUpdateStaysInUserSchool() &&
+            (
+              isConfiguredActiveSession(resource.data.sessionId) ||
+              !(resource.data.sessionId is string)
+            ) &&
+            isConfiguredActiveSession(request.resource.data.sessionId) &&
+            (
+              isConfiguredActiveTermContext(resource.data.termId, resource.data.termDocId) ||
+              !(resource.data.termId is string)
+            ) &&
+            isConfiguredActiveTermContext(request.resource.data.termId, request.resource.data.termDocId)
+          ) ||
+          (
+            isTeacher() &&
+            teacherScoreRequestAllowed(scoreId)
+          )
+        ) ||
+        scoreMetadataNormalizationAllowed();
+
+      allow delete: if isSuperAdmin() ||
+        (
+          canRecordScores() &&
+          existingInUserSchool() &&
+          (isAdmin() || (hasAssignedClass(resource.data.classId) && hasAssignedSubject(resource.data.subjectId))) &&
+          isConfiguredActiveSession(resource.data.sessionId) &&
+          isConfiguredActiveTermContext(resource.data.termId, resource.data.termDocId)
+        );
+    }
+
+    match /scoreLtcCaches/{cacheId} {
+      allow read: if isSuperAdmin() ||
+        (
+          (isAdmin() && (resource.data.schoolId == userSchoolId() || legacyLtcCacheInUserSchool())) ||
+          (
+            isTeacher() &&
+            (resource.data.schoolId == userSchoolId() || legacyLtcCacheInUserSchool()) &&
+            hasAssignedClass(ltcCacheClassValue()) &&
+            hasAssignedSubject(ltcCacheSubjectValue())
+          )
+        );
+
+      allow create: if isSuperAdmin() ||
+        (
+          isAdmin() &&
+          request.resource.data.schoolId == userSchoolId()
+        ) ||
+        (
+          isTeacher() &&
+          request.resource.data.schoolId == userSchoolId() &&
+          hasAssignedClass(ltcCacheClassValue()) &&
+          hasAssignedSubject(ltcCacheSubjectValue())
+        );
+
+      allow update: if isSuperAdmin() ||
+        (
+          isAdmin() &&
+          (
+            (
+              resource.data.schoolId == userSchoolId() &&
+              request.resource.data.schoolId == resource.data.schoolId
+            ) ||
+            (
+              !(resource.data.schoolId is string) &&
+              request.resource.data.schoolId == userSchoolId()
+            )
+          )
+        ) ||
+        (
+          isTeacher() &&
+          (resource.data.schoolId == userSchoolId() || legacyLtcCacheInUserSchool()) &&
+          hasAssignedClass(ltcCacheClassValue()) &&
+          hasAssignedSubject(ltcCacheSubjectValue()) &&
+          request.resource.data.schoolId == userSchoolId()
+        );
+
+      allow delete: if false;
+    }
+
+    match /recordRosterCaches/{cacheId} {
+      allow read: if isSuperAdmin() ||
+        (
+          (isAdmin() && resource.data.schoolId == userSchoolId()) ||
+          (
+            isTeacher() &&
+            resource.data.schoolId == userSchoolId() &&
+            hasAssignedClass(ltcCacheClassValue())
+          )
+        );
+
+      allow create, update: if isSuperAdmin() ||
+        (
+          canManageClassRoster() &&
+          request.resource.data.schoolId == userSchoolId() &&
+          request.resource.data.classId is string &&
+          (
+            isAdmin() ||
+            hasAssignedClass(request.resource.data.classId)
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    match /recordScoreCaches/{cacheId} {
+      allow read: if isSuperAdmin() ||
+        (
+          (isAdmin() && resource.data.schoolId == userSchoolId()) ||
+          (
+            isTeacher() &&
+            resource.data.schoolId == userSchoolId() &&
+            hasAssignedClass(ltcCacheClassValue()) &&
+            hasAssignedSubject(ltcCacheSubjectValue())
+          )
+        );
+
+      allow create, update: if isSuperAdmin() ||
+        (
+          (
+            isAdmin() &&
+            canRecordScores()
+          ) ||
+          (
+            isTeacher() &&
+            canRecordScores() &&
+            request.resource.data.classId is string &&
+            request.resource.data.subjectId is string &&
+            hasAssignedClass(request.resource.data.classId) &&
+            hasAssignedSubject(request.resource.data.subjectId)
+          )
+        ) &&
+        request.resource.data.schoolId == userSchoolId();
+
+      allow delete: if false;
+    }
+
+    match /classTeacherCodes/{codeId} {
+      allow read, create, update: if false;
+      allow delete: if false;
+    }
+
+    match /subjectTeacherCodes/{codeId} {
+      allow read, create, update: if false;
+      allow delete: if false;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

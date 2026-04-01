@@ -1,10 +1,9 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { saveSchoolData } from "./utils/school-data";
-import OnboardingSuccess from "./OnboardingSuccess";
+import { initializeSchoolAcademicCycle } from "../utils/firestoreService";
 import { markOnboardingComplete, isOnboardingComplete } from "../utils/onboardingUtils";
-import { getCurrentUser, setUserRole, getSelectedRole, clearSelectedRole } from "../utils/authUtils";
-import { generateAdminPasscode, hashAdminPasscode, storeAdminPasscodeHash } from "../utils/adminPasscodeUtils";
+import { getCurrentUser, setUserRole } from "../utils/authUtils";
 import { firestore } from "../firebase";
 import { doc, getDoc } from "firebase/firestore";
 import { Loader } from "lucide-react";
@@ -12,7 +11,6 @@ import { Loader } from "lucide-react";
 export default function School() {
   const navigate = useNavigate();
   const [logoPreview, setLogopreview] = useState(null);
-  const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errors, setErrors] = useState({});
   const [form, setForm] = useState({
@@ -22,9 +20,12 @@ export default function School() {
     email: "",
     phone: "",
     motto: "",
+    startingSessionName: "",
+    startingTermAlias: "term1",
   });
 
   const schoolLogoRef = useRef(null);
+  const normalizeWhitespace = (value) => String(value || "").replace(/\s+/g, " ").trim();
 
   // Check if onboarding is already completed, if so redirect
   useEffect(() => {
@@ -92,46 +93,84 @@ export default function School() {
   // Validation functions
   const validateForm = () => {
     const newErrors = {};
+    const trimmedName = normalizeWhitespace(form.name);
+    const trimmedAddress = normalizeWhitespace(form.address);
+    const trimmedEmail = normalizeWhitespace(form.email).toLowerCase();
+    const trimmedPhone = normalizeWhitespace(form.phone);
+    const trimmedMotto = normalizeWhitespace(form.motto);
+    const trimmedSessionName = normalizeWhitespace(form.startingSessionName);
+    const normalizedStartingTerm = String(form.startingTermAlias || "").trim();
+    const validTextRegex = /^[a-zA-Z0-9\s.,&'()\-/:]+$/;
 
-    if (!form.name.trim()) {
+    if (!trimmedName) {
       newErrors.name = "School name is required";
-    } else if (form.name.trim().length < 3) {
+    } else if (trimmedName.length < 3) {
       newErrors.name = "School name must be at least 3 characters";
-    } else if (form.name.trim().length > 100) {
+    } else if (trimmedName.length > 100) {
       newErrors.name = "School name must not exceed 100 characters";
+    } else if (!validTextRegex.test(trimmedName)) {
+      newErrors.name = "School name contains invalid characters";
     }
 
-    if (!form.address.trim()) {
+    if (!trimmedAddress) {
       newErrors.address = "School address is required";
-    } else if (form.address.trim().length < 5) {
+    } else if (trimmedAddress.length < 5) {
       newErrors.address = "Address must be at least 5 characters";
-    } else if (form.address.trim().length > 200) {
+    } else if (trimmedAddress.length > 200) {
       newErrors.address = "Address must not exceed 200 characters";
+    } else if (!validTextRegex.test(trimmedAddress)) {
+      newErrors.address = "Address contains invalid characters";
     }
 
-    if (!form.email.trim()) {
+    if (!trimmedEmail) {
       newErrors.email = "Email address is required";
     } else {
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(form.email)) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/;
+      if (!emailRegex.test(trimmedEmail)) {
         newErrors.email = "Please enter a valid email address";
       }
     }
 
-    if (!form.phone.trim()) {
+    if (!trimmedPhone) {
       newErrors.phone = "School phone number is required";
-    } else if (form.phone.trim().length < 10) {
-      newErrors.phone = "Phone number must be at least 10 digits";
-    } else if (!/^[\d\s\-\+\(\)]+$/.test(form.phone)) {
+    } else if (!/^[\d\s+()-]+$/.test(trimmedPhone)) {
       newErrors.phone = "Please enter a valid phone number";
+    } else {
+      const digits = trimmedPhone.replace(/\D/g, "");
+      if (digits.length < 10 || digits.length > 15) {
+        newErrors.phone = "Phone number must contain 10 to 15 digits";
+      }
     }
 
-    if (!form.motto.trim()) {
+    if (!trimmedMotto) {
       newErrors.motto = "School motto is required";
-    } else if (form.motto.trim().length < 3) {
+    } else if (trimmedMotto.length < 3) {
       newErrors.motto = "Motto must be at least 3 characters";
-    } else if (form.motto.trim().length > 150) {
+    } else if (trimmedMotto.length > 150) {
       newErrors.motto = "Motto must not exceed 150 characters";
+    } else if (!validTextRegex.test(trimmedMotto)) {
+      newErrors.motto = "Motto contains invalid characters";
+    }
+
+    if (!trimmedSessionName) {
+      newErrors.startingSessionName = "Academic session is required";
+    } else {
+      const match = trimmedSessionName.match(/^(\d{4})\s*\/\s*(\d{4})$/);
+      if (!match) {
+        newErrors.startingSessionName = "Use session format YYYY/YYYY";
+      } else {
+        const startYear = Number(match[1]);
+        const endYear = Number(match[2]);
+        if (endYear !== startYear + 1) {
+          newErrors.startingSessionName = "Session years must be consecutive";
+        } else if (startYear < 2025) {
+          newErrors.startingSessionName = "Session must be 2025/2026 or later";
+        }
+      }
+    }
+
+    if (!["term1", "term2", "term3"].includes(normalizedStartingTerm)) {
+      newErrors.startingTermAlias = "Select a valid starting term";
     }
 
     return newErrors;
@@ -150,6 +189,17 @@ export default function School() {
     setIsLoading(true);
 
     try {
+      const sanitizedForm = {
+        ...form,
+        name: normalizeWhitespace(form.name),
+        address: normalizeWhitespace(form.address),
+        email: normalizeWhitespace(form.email).toLowerCase(),
+        phone: normalizeWhitespace(form.phone),
+        motto: normalizeWhitespace(form.motto),
+        startingSessionName: normalizeWhitespace(form.startingSessionName),
+        startingTermAlias: String(form.startingTermAlias || "term1").trim() || "term1",
+      };
+
       // Get current user
       const currentUser = getCurrentUser();
       if (!currentUser) {
@@ -159,7 +209,7 @@ export default function School() {
       }
 
       // Generate slug-format schoolId from school name (lowercase, no spaces, dashes)
-      const schoolId = form.name
+      const schoolId = sanitizedForm.name
         .trim()
         .toLowerCase()
         .replace(/\s+/g, '-')
@@ -171,26 +221,18 @@ export default function School() {
         return;
       }
 
-      // IMPORTANT: Set schoolId in user document FIRST (required by Firebase Rules)
-      // This must happen before saveSchoolData, or Rules will deny permission
-      const selectedRole = getSelectedRole(currentUser.uid);
-      await setUserRole(currentUser.uid, selectedRole || 'admin', schoolId);
+      // School onboarding must always bind the creator as admin for this school.
+      await setUserRole(currentUser.uid, "admin", schoolId);
 
-      // NOW save school data to Firebase Realtime Database
-      // User now has role='admin' and schoolId set, so Rules will allow the write
-      await saveSchoolData(form, currentUser.uid, schoolId);
-      
-      // Clear selected role from localStorage if it was stored
-      if (selectedRole) {
-        clearSelectedRole(currentUser.uid);
-      }
+      // Save school profile after admin/school binding has been established.
+      await saveSchoolData(sanitizedForm, currentUser.uid, schoolId);
 
-      // Generate admin passcode
-      const adminPasscode = generateAdminPasscode();
-      const hashedPasscode = await hashAdminPasscode(adminPasscode);
-
-      // Store hashed passcode in Firestore at schools/{schoolId}/security/adminPasscode
-      await storeAdminPasscodeHash(schoolId, hashedPasscode);
+      // Create the first academic session + current term for the school.
+      await initializeSchoolAcademicCycle({
+        schoolId,
+        initialSessionName: sanitizedForm.startingSessionName,
+        initialTermAlias: sanitizedForm.startingTermAlias,
+      });
 
       // Mark onboarding complete
       await markOnboardingComplete(currentUser.uid);
@@ -203,6 +245,8 @@ export default function School() {
         email: "",
         phone: "",
         motto: "",
+        startingSessionName: "",
+        startingTermAlias: "term1",
       });
       setLogopreview(null);
       setErrors({});
@@ -210,14 +254,19 @@ export default function School() {
         schoolLogoRef.current.value = "";
       }
 
-      // Navigate to admin passcode setup page with passcode to display
-      navigate("/admin-passcode-setup", {
-        replace: true,
-        state: { passcode: adminPasscode, schoolName: form.name },
-      });
+      // Continue to dashboard after onboarding.
+      navigate("/school-dashboard", { replace: true });
     } catch (error) {
       console.error("Error saving school:", error);
-      setErrors({ submit: "Error saving school. Please try again." });
+      const code = String(error?.code || "");
+      if (code.includes("permission-denied")) {
+        setErrors({
+          submit:
+            "Permission denied while saving school. Verify Firestore rules allow first-time admin school binding.",
+        });
+      } else {
+        setErrors({ submit: "Error saving school. Please try again." });
+      }
     } finally {
       setIsLoading(false);
     }
@@ -225,11 +274,7 @@ export default function School() {
 
 
   return (
-    <>
-      {/* Success Modal */}
-      {showSuccessModal && <OnboardingSuccess />}
-
-      <div>
+    <div>
       <div className="max-sm:pt-10 ">
         {/* headline and subhead */}
         <div className="z-[1px] relative flex justify-center ">
@@ -373,6 +418,44 @@ export default function School() {
                       <p className="text-xs text-red-600 dark:text-red-400 mt-1">{errors.motto}</p>
                     )}
                   </div>
+
+                  <div className="flex flex-col">
+                    <label htmlFor="startingSessionName" className="label-w">
+                      Academic Session
+                    </label>
+                    <input
+                      className={`input ${errors.startingSessionName ? "border-red-500 dark:border-red-400" : ""}`}
+                      type="text"
+                      id="startingSessionName"
+                      name="startingSessionName"
+                      placeholder="2025/2026"
+                      value={form.startingSessionName}
+                      onChange={handleChange}
+                    />
+                    {errors.startingSessionName && (
+                      <p className="text-xs text-red-600 dark:text-red-400 mt-1">{errors.startingSessionName}</p>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col">
+                    <label htmlFor="startingTermAlias" className="label-w">
+                      Starting Term
+                    </label>
+                    <select
+                      className={`input ${errors.startingTermAlias ? "border-red-500 dark:border-red-400" : ""}`}
+                      id="startingTermAlias"
+                      name="startingTermAlias"
+                      value={form.startingTermAlias}
+                      onChange={handleChange}
+                    >
+                      <option value="term1">First Term</option>
+                      <option value="term2">Second Term</option>
+                      <option value="term3">Third Term</option>
+                    </select>
+                    {errors.startingTermAlias && (
+                      <p className="text-xs text-red-600 dark:text-red-400 mt-1">{errors.startingTermAlias}</p>
+                    )}
+                  </div>
                 </div>
 
                  {errors.submit && (
@@ -396,6 +479,5 @@ export default function School() {
         </div>
       </div>
     </div>
-    </>
   );
 }

@@ -104,7 +104,7 @@ export default function AdminSettingsModal({ isOpen, onClose }) {
   );
 }
 
-function EditSchoolDetails({ onClose }) {
+function EditSchoolDetails() {
   return (
     <div>
       <h3 className="text-xl font-bold text-black dark:text-white mb-4">
@@ -121,7 +121,7 @@ function EditSchoolDetails({ onClose }) {
   );
 }
 
-function ManageClasses({ onClose }) {
+function ManageClasses() {
   return (
     <div>
       <h3 className="text-xl font-bold text-black dark:text-white mb-4">
@@ -151,7 +151,7 @@ function ManageClasses({ onClose }) {
   );
 }
 
-function ManageSubjects({ onClose }) {
+function ManageSubjects() {
   return (
     <div>
       <h3 className="text-xl font-bold text-black dark:text-white mb-4">
@@ -192,7 +192,7 @@ function ManageSubjects({ onClose }) {
   );
 }
 
-function ResultSettings({ onClose }) {
+function ResultSettings() {
   const [adminSettings, setAdminSettings] = useState(getAdminSettings());
   const [isSaving, setIsSaving] = useState(false);
 

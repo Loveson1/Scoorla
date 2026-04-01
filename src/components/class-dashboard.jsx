@@ -1,437 +1,515 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { jsPDF } from "jspdf";
+import { Download, Eye, Loader2, Pencil, Trash2, UserMinus } from "lucide-react";
 import {
-  getSchoolData,
+  canDeleteStudentSafely,
+  deleteStudentRecord,
   getClassSelection,
-  saveClassStudents,
   getClassStudents,
-  getSubjectsByClass,
-  getScores,
-  calculateGrade,
-  getRemarkByGrade,
-  getAdminSettings,
-  getGradingScale,
-  getDefaultGradingScale,
-  getClassAverage,
-  getStudentPosition,
-  roundScore,
+  getStudentReportRows,
+  saveClassStudents,
+  withdrawStudent,
 } from "./utils/school-data";
-import { getCurrentUser } from "../utils/authUtils";
-import { getUserData } from "../utils/userSession";
-import { deleteStudent } from "../utils/firebaseDatabase";
 import AddStudent from "./AddStudent";
-import StudentResultPreview from "./StudentResultPreview";
+import { downloadStudentResultPdf } from "../utils/studentResultPdf";
+import { useSessionContext } from "../context/SessionContext";
+import { useAuthContext } from "../context/AuthContext";
+import { useSchoolBootstrap } from "../context/SchoolBootstrapContext";
 
 
 export default function ClassDashboard() {
   const navigate = useNavigate();
-  const [schoolData, setSchoolData] = useState({});
+  const { isAdmin, canManageStudents, canAccessClass, authUser, schoolId } = useAuthContext();
+  const { schoolData, adminSettings } = useSchoolBootstrap();
+  const {
+    selectedSessionId,
+    activeSessionId,
+    selectedSessionName,
+    selectedTermId,
+    isHistoricalView,
+    isReadOnlyView,
+    isPastTermView,
+  } = useSessionContext();
   const [classSelection, setClassSelection] = useState({});
-  const [userId, setUserId] = useState(null);
-  const [schoolId, setSchoolId] = useState(null);
   const [students, setStudents] = useState([]);
   const [searchTerm, setSearchTerm] = useState("");
+  const [showInactiveStudents, setShowInactiveStudents] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingStudent, setEditingStudent] = useState(null);
-  const [isResultPreviewOpen, setIsResultPreviewOpen] = useState(false);
-  const [selectedStudent, setSelectedStudent] = useState(null);
-  const [selectedRole, setSelectedRole] = useState(null);
+  const [isStudentSubmitting, setIsStudentSubmitting] = useState(false);
+  const [downloadingStudentId, setDownloadingStudentId] = useState("");
+  const [isStudentsLoading, setIsStudentsLoading] = useState(true);
+  const [hasHydratedSelection, setHasHydratedSelection] = useState(false);
 
-  // Load user data on mount
-  useEffect(() => {
-    const loadUserData = async () => {
-      const currentUser = getCurrentUser();
-      if (currentUser) {
-        setUserId(currentUser.uid);
-        setSelectedRole(localStorage.getItem(`selectedRole_${currentUser.uid}`));
-        setClassSelection(getClassSelection(currentUser.uid));
-        
-        // Get schoolId from Firestore FIRST
-        const userData = await getUserData(currentUser.uid);
-        if (userData && userData.schoolId) {
-          setSchoolId(userData.schoolId);
-          
-          // THEN load school data with correct schoolId
-          const data = await getSchoolData(userData.schoolId);
-          setSchoolData(data || {});
-        }
-      }
+  const normalizeStudentName = (value) =>
+    String(value || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  const getStatusMeta = (status) => {
+    const normalized = String(status || "active").toLowerCase();
+    if (normalized === "archived") {
+      return {
+        label: "Archived",
+        className:
+          "bg-gray-200 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
+      };
+    }
+    if (normalized === "inactive") {
+      return {
+        label: "Inactive",
+        className:
+          "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
+      };
+    }
+    if (normalized === "withdrawn") {
+      return {
+        label: "Withdrawn",
+        className:
+          "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300",
+      };
+    }
+    if (normalized === "graduated") {
+      return {
+        label: "Withdrawn",
+        className:
+          "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300",
+      };
+    }
+    if (normalized === "transferred") {
+      return {
+        label: "Transferred",
+        className:
+          "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300",
+      };
+    }
+    return {
+      label: "Active",
+      className:
+        "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300",
     };
-    
-    loadUserData();
-  }, []);
+  };
+  const isStudentActive = (student) =>
+    String(student?.status || "active").toLowerCase() === "active" &&
+    !student?.isDeleted;
+  const isReadOnlyLifecycleStudent = (student) => {
+    const normalizedStatus = String(student?.status || "active").toLowerCase();
+    return normalizedStatus === "withdrawn" || normalizedStatus === "graduated";
+  };
+  const hasClassAccess = isAdmin || canAccessClass(classSelection.class);
+  const canEditRoster = hasClassAccess && canManageStudents();
+  const resolvedRosterSessionId =
+    selectedSessionId || classSelection.sessionId || activeSessionId || null;
+  const resolvedRosterTermId = selectedTermId || classSelection.term || "term1";
+  const applyVisibleRoster = useCallback(
+    (roster = []) =>
+      (Array.isArray(roster) ? roster : []).filter((student) => {
+        const status = String(student?.status || "active").toLowerCase();
+        const isDeleted = !!student?.isDeleted;
+        const isVisibleLifecycle = isHistoricalView || showInactiveStudents;
+        if (!isVisibleLifecycle && (isDeleted || status !== "active")) {
+          return false;
+        }
+        return true;
+      }),
+    [isHistoricalView, showInactiveStudents]
+  );
+  const loadClassStudents = useCallback(async () => {
+    if (!schoolId || !classSelection.class) {
+      setStudents([]);
+      if (hasHydratedSelection) {
+        setIsStudentsLoading(false);
+      }
+      return;
+    }
+    if (!hasClassAccess) {
+      setStudents([]);
+      setIsStudentsLoading(false);
+      return;
+    }
+    setIsStudentsLoading(true);
+    try {
+      const savedStudents = await getClassStudents(schoolId, classSelection.class, {
+        sessionId: resolvedRosterSessionId,
+        termId: resolvedRosterTermId,
+        includeInactive: isHistoricalView || showInactiveStudents,
+        includeDeleted: isHistoricalView || showInactiveStudents,
+      });
+      setStudents(applyVisibleRoster(savedStudents || []));
+    } catch (error) {
+      console.error("Error loading class students:", error);
+      setStudents([]);
+    } finally {
+      setIsStudentsLoading(false);
+    }
+  }, [
+    schoolId,
+    classSelection.class,
+    resolvedRosterSessionId,
+    resolvedRosterTermId,
+    isHistoricalView,
+    showInactiveStudents,
+    hasClassAccess,
+    applyVisibleRoster,
+    hasHydratedSelection,
+  ]);
 
   useEffect(() => {
-    if (!schoolId || !classSelection.class) return;
-    
+    if (!authUser?.uid) {
+      setHasHydratedSelection(false);
+      return;
+    }
+    setClassSelection(getClassSelection(authUser.uid));
+    setHasHydratedSelection(true);
+  }, [authUser?.uid]);
+
+  useEffect(() => {
+    if (!schoolId || !classSelection.class) {
+      if (hasHydratedSelection) {
+        setIsStudentsLoading(false);
+      }
+      return;
+    }
+
     // Load students from Firebase
-    getClassStudents(schoolId, classSelection.class).then((savedStudents) => {
-      setStudents(savedStudents || []);
+    loadClassStudents();
+  }, [classSelection.class, schoolId, loadClassStudents, hasHydratedSelection]);
+
+  useEffect(() => {
+    if (!selectedSessionId) return;
+    setClassSelection((prev) => {
+      if (!prev || !prev.class) return prev;
+      if (
+        prev.sessionId === selectedSessionId &&
+        prev.session === selectedSessionName &&
+        prev.term === selectedTermId
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        sessionId: selectedSessionId,
+        session: selectedSessionName || prev.session,
+        term: selectedTermId || prev.term || "term1",
+      };
     });
-  }, [classSelection.class, schoolId]);
+  }, [selectedSessionId, selectedSessionName, selectedTermId]);
 
   const handleAddStudent = async (studentData) => {
-    if (!userId || !schoolId) return;
+    if (!authUser?.uid || !schoolId) return;
+    if (isStudentSubmitting) return;
+    if (!canEditRoster) {
+      alert("You are not assigned to this resource");
+      return;
+    }
+    if (isReadOnlyView) {
+      alert("This view is read-only. Return to the current term to add students.");
+      return;
+    }
     
+    const writeSessionId = selectedSessionId || activeSessionId || null;
+    if (!writeSessionId) {
+      alert("No active session is selected. Please set an active session in Admin Settings.");
+      return;
+    }
+
     console.log("Adding student:", studentData);
+    const normalizedInputName = normalizeStudentName(studentData.name);
+    if (!normalizedInputName) {
+      alert("Student name is required.");
+      return;
+    }
+
+    const knownRoster = Array.isArray(students) ? students : [];
+    const duplicate = knownRoster.some(
+      (student) => normalizeStudentName(student?.name) === normalizedInputName
+    );
+    if (duplicate) {
+      alert("A student with this name already exists in this class.");
+      return;
+    }
     
     const newStudent = {
       id: Date.now(),
-      name: studentData.name,
+      name: String(studentData.name || "").replace(/\s+/g, " ").trim(),
       regNumber: studentData.regNumber || "",
       sex: studentData.sex || "",
       phone: studentData.phone || "",
     };
-    const updatedStudents = [...students, newStudent];
-    setStudents(updatedStudents);
-    
+    const optimisticStudent = {
+      ...newStudent,
+      id: `temp__${Date.now()}`,
+      classId: classSelection.class,
+      status: "active",
+      isDeleted: false,
+    };
+    setIsStudentSubmitting(true);
+    setStudents((prev) => applyVisibleRoster([...(Array.isArray(prev) ? prev : []), optimisticStudent]));
+    setIsAddModalOpen(false);
+    setEditingStudent(null);
     try {
-      console.log("Saving to Firebase:", { schoolId, classId: classSelection.class, students: updatedStudents });
-      await saveClassStudents(schoolId, classSelection.class, updatedStudents, userId);
-      
-      console.log("Reloading students from Firebase...");
-      // Reload students from Firebase to get the correct IDs
-      const freshStudents = await getClassStudents(schoolId, classSelection.class);
-      console.log("Fresh students loaded:", freshStudents);
-      setStudents(freshStudents || []);
-      
-      setIsAddModalOpen(false);
+      console.log("Saving to Firebase:", { schoolId, classId: classSelection.class, students: [newStudent] });
+      const saveResult = await saveClassStudents(schoolId, classSelection.class, [newStudent], authUser.uid, {
+        sessionId: writeSessionId,
+        termId: resolvedRosterTermId,
+        upsertExistingStudent: false,
+        existingRoster: knownRoster,
+      });
+      if (Array.isArray(saveResult?.students)) {
+        setStudents(applyVisibleRoster(saveResult.students));
+      } else {
+        await loadClassStudents();
+      }
     } catch (error) {
       console.error("Error adding student:", error);
+      setStudents((prev) =>
+        (Array.isArray(prev) ? prev : []).filter((student) => student?.id !== optimisticStudent.id)
+      );
       alert("Failed to add student: " + error.message);
-      // Revert to previous students if save failed
-      setStudents(students);
+      await loadClassStudents();
+    } finally {
+      setIsStudentSubmitting(false);
     }
   };
 
   const handleDeleteStudent = async (studentId) => {
-    if (!userId || !schoolId) return;
-    if (window.confirm("Are you sure you want to delete this student?")) {
-      try {
-        // If it's a Firebase ID (string), delete from Firebase first
-        if (typeof studentId === 'string') {
-          console.log("Deleting from Firebase:", { schoolId, studentId });
-          await deleteStudent(schoolId, studentId);
+    if (!authUser?.uid || !schoolId) return;
+    if (!canEditRoster) {
+      alert("You are not assigned to this resource");
+      return;
+    }
+    if (isReadOnlyView) {
+      alert("This view is read-only. Student lifecycle actions are disabled.");
+      return;
+    }
+
+    const student = students.find((item) => item.id === studentId);
+    if (isReadOnlyLifecycleStudent(student)) {
+      alert("Withdrawn students are read-only. Use preview/download result.");
+      return;
+    }
+
+    setIsStudentSubmitting(true);
+    let guard;
+    try {
+      guard = await canDeleteStudentSafely(schoolId, studentId);
+    } catch (error) {
+      console.error("Error checking delete safety:", error);
+      alert(`Failed to validate delete safety: ${error?.message || "Unknown error"}`);
+      setIsStudentSubmitting(false);
+      return;
+    }
+
+    if (!guard?.canDelete) {
+      const confirmWithdraw = window.confirm(
+        `${guard?.reason || "Student has academic records."}\n\nMark this student as withdrawn instead?`
+      );
+      if (confirmWithdraw) {
+        try {
+          await withdrawStudent(schoolId, studentId);
+          await loadClassStudents();
+        } catch (error) {
+          console.error("Error withdrawing student:", error);
+          alert("Failed to withdraw student: " + error.message);
+        } finally {
+          setIsStudentSubmitting(false);
         }
-        
-        // Remove from local state
-        const updatedStudents = students.filter((s) => s.id !== studentId);
-        setStudents(updatedStudents);
-        
-        // Update cache
-        await saveClassStudents(schoolId, classSelection.class, updatedStudents, userId);
-        
-        // Reload from Firebase to ensure consistency
-        const freshStudents = await getClassStudents(schoolId, classSelection.class);
-        setStudents(freshStudents || []);
+      } else {
+        setIsStudentSubmitting(false);
+      }
+      return;
+    }
+
+    if (window.confirm("Are you sure you want to permanently delete this student?")) {
+      try {
+        console.log("Deleting from Firebase:", { schoolId, studentId });
+        await deleteStudentRecord(schoolId, studentId);
+        await loadClassStudents();
       } catch (error) {
         console.error("Error deleting student:", error);
         alert("Failed to delete student: " + error.message);
+      } finally {
+        setIsStudentSubmitting(false);
       }
+      return;
     }
+
+    setIsStudentSubmitting(false);
   };
 
   const handleEditStudent = (student) => {
+    if (!canEditRoster) {
+      alert("You are not assigned to this resource");
+      return;
+    }
+    if (isReadOnlyLifecycleStudent(student)) {
+      alert("Withdrawn students are read-only. Use preview/download result.");
+      return;
+    }
     setEditingStudent(student);
     setIsAddModalOpen(true);
   };
 
-  const handlePreviewResult = (student) => {
-    setSelectedStudent(student);
-    setIsResultPreviewOpen(true);
-  };
-
   const handleDownloadResult = async (student) => {
+    if (!schoolId || !classSelection?.class) return;
+    setDownloadingStudentId(String(student?.id || ""));
+
     try {
-      // Get subjects and scores
-      const subjects = getSubjectsByClass(schoolId, classSelection.class);
-      const gradingScale = getGradingScale(schoolId) || getDefaultGradingScale();
-      const adminSettings = await getAdminSettings(schoolId);
-      const results = [];
-
-      subjects.forEach((subject) => {
-        const scores = getScores(
-          schoolId,
-          classSelection.class,
-          subject,
-          classSelection.term,
-          classSelection.session,
-        );
-
-        const studentScore = scores[student.id];
-        const test1 = roundScore(parseFloat(studentScore?.test1) || 0);
-        const test2 = roundScore(parseFloat(studentScore?.test2) || 0);
-        const exam = roundScore(parseFloat(studentScore?.exam) || 0);
-        const total = test1 + test2 + exam;
-        const testSum = test1 + test2;
-        const grade = calculateGrade(total, gradingScale);
-        const remark = getRemarkByGrade(grade);
-        const classAverage = roundScore(
-          getClassAverage(
-            schoolId,
-            classSelection.class,
-            subject,
-            classSelection.term,
-            classSelection.session,
-          ),
-        );
-        const position = getStudentPosition(
-          schoolId,
-          classSelection.class,
-          subject,
-          classSelection.term,
-          classSelection.session,
-          student.id,
-        );
-
-        results.push({
-          subject,
-          test1,
-          test2,
-          testSum,
-          exam,
-          total,
-          lastTermCumulative: 0,
-          classAverage,
-          position,
-          grade,
-          remark,
-        });
+      const results = await getStudentReportRows({
+        schoolId,
+        classId: classSelection.class,
+        studentId: student.id,
+        termId: classSelection.term,
+        sessionId: classSelection.sessionId || selectedSessionId,
+        adminSettings,
+        screen: "ClassDashboard",
       });
 
-      // Generate PDF
-      const pdf = new jsPDF({
-        orientation: "portrait",
-        unit: "mm",
-        format: "a4",
-      });
-
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-      const margin = 15;
-      let yPosition = margin;
-
-      // School Logo and Info Section
-      if (schoolData && schoolData.logo) {
-        const logoSize = 20;
-        try {
-          pdf.addImage(
-            schoolData.logo,
-            "JPEG",
-            margin,
-            yPosition,
-            logoSize,
-            logoSize,
-          );
-        } catch (e) {
-          // Logo conversion failed, continue without it
-        }
+      if (!results.length) {
+        alert("No result data is available for this student yet.");
+        return;
       }
 
-      // School Information
-      const infoX = margin + 25;
-      pdf.setFontSize(14);
-      pdf.setFont(undefined, "bold");
-      pdf.text(schoolData?.name || "School Name", infoX, yPosition + 5);
-
-      pdf.setFontSize(9);
-      pdf.setFont(undefined, "normal");
-      yPosition += 8;
-      pdf.text(schoolData?.address || "", infoX, yPosition);
-      yPosition += 4;
-      pdf.text(`Email: ${schoolData?.email || ""}`, infoX, yPosition);
-      yPosition += 4;
-      pdf.text(`Phone: ${schoolData?.phone || ""}`, infoX, yPosition);
-      yPosition += 4;
-      pdf.setFont(undefined, "italic");
-      pdf.text(`"${schoolData?.motto || ""}`, infoX, yPosition);
-
-      yPosition += 12;
-      pdf.setFont(undefined, "bold");
-      pdf.setFontSize(11);
-      pdf.text(
-        `${getTermLabel(classSelection.term)} Report Sheet - ${classSelection.session}`,
-        margin,
-        yPosition,
-      );
-
-      yPosition += 10;
-      // Student Information
-      pdf.setFontSize(9);
-      pdf.setFont(undefined, "bold");
-      pdf.text("Student Information", margin, yPosition);
-      yPosition += 5;
-
-      pdf.setFont(undefined, "normal");
-      const col1 = margin;
-      const col2 = margin + 50;
-
-      pdf.text(`Name: ${student.name}`, col1, yPosition);
-      pdf.text(`Reg No: ${student.regNumber || "N/A"}`, col2, yPosition);
-      yPosition += 5;
-
-      pdf.text(`Sex: ${student.sex || "N/A"}`, col1, yPosition);
-      pdf.text(
-        `Class: ${getClassLabel(classSelection.class)}`,
-        col2,
-        yPosition,
-      );
-      yPosition += 5;
-
-      pdf.text(
-        `Position in Class: ${student.positionInClass || "N/A"}`,
-        col1,
-        yPosition,
-      );
-
-      yPosition += 10;
-      // Results Table
-      pdf.setFontSize(8);
-      pdf.setFont(undefined, "bold");
-      pdf.text("Subject Performance", margin, yPosition);
-      yPosition += 6;
-
-      // Table headers
-      const isFirstTerm = classSelection.term === "term1" || classSelection.term === "1st";
-      const headers = [
-        { header: "Subject", width: 30 },
-        { header: "T1", width: 10 },
-        { header: "T2", width: 10 },
-        { header: "T1+T2", width: 12 },
-        { header: "Exam", width: 10 },
-        { header: "Total", width: 12 },
-        ...(isFirstTerm ? [] : [{ header: "L.T.Cum", width: 12 }]),
-        { header: "C.Avg", width: 10 },
-        { header: "Pos", width: 8 },
-        { header: "Grade", width: 10 },
-        { header: "Remark", width: 16 },
-      ];
-
-      let xPos = margin;
-      headers.forEach((col) => {
-        pdf.text(col.header, xPos, yPosition);
-        xPos += col.width;
+      const saved = await downloadStudentResultPdf({
+        student,
+        classInfo: { ...classSelection, schoolId },
+        results,
+        schoolData,
+        adminSettings,
+        totalStudentsInClass: students.length,
       });
 
-      yPosition += 5;
-      pdf.setDrawColor(200, 200, 200);
-      pdf.line(margin, yPosition, pageWidth - margin, yPosition);
-      yPosition += 4;
-
-      pdf.setFont(undefined, "normal");
-
-      results.forEach((result) => {
-        if (yPosition + 5 > pageHeight - margin) {
-          pdf.addPage();
-          yPosition = margin;
-          xPos = margin;
-          headers.forEach((col) => {
-            pdf.text(col.header, xPos, yPosition);
-            xPos += col.width;
-          });
-          yPosition += 5;
-          pdf.line(margin, yPosition, pageWidth - margin, yPosition);
-          yPosition += 4;
-        }
-
-        xPos = margin;
-        const rowData = [
-          result.subject.substring(0, 20),
-          result.test1.toString(),
-          result.test2.toString(),
-          result.testSum.toString(),
-          result.exam.toString(),
-          result.total.toString(),
-          ...(isFirstTerm ? [] : [result.lastTermCumulative.toString()]),
-          result.classAverage.toString(),
-          result.position.toString(),
-          result.grade,
-          result.remark,
-        ];
-
-        rowData.forEach((data, idx) => {
-          const col = headers[idx];
-          pdf.text(data.toString(), xPos, yPosition);
-          xPos += col.width;
-        });
-
-        yPosition += 5;
-      });
-
-      // Next term begins info
-      yPosition += 5;
-      pdf.setFontSize(9);
-      pdf.setFont(undefined, "italic");
-      pdf.text(
-        `Next term begins: ${formatDate(adminSettings?.nextTermBegins)}`,
-        margin,
-        yPosition,
-      );
-
-      // Footer
-      yPosition = pageHeight - 15;
-      pdf.setFontSize(7);
-      pdf.setTextColor(150, 150, 150);
-      pdf.text(
-        `Generated by Scoorla Result Management System`,
-        margin,
-        yPosition,
-      );
-
-      // Save PDF
-      const filename = `${student.name}_${getTermLabel(classSelection.term)}_${classSelection.session}.pdf`;
-      pdf.save(filename);
+      if (!saved) {
+        alert("No result data is available for this student yet.");
+      }
     } catch (error) {
-      console.error("Error generating PDF:", error);
+      console.error("Error downloading PDF:", error);
       alert("Error downloading PDF. Please try again.");
+    } finally {
+      setDownloadingStudentId("");
     }
   };
 
-  const formatDate = (dateString) => {
-    if (!dateString) return "Not set";
-    const date = new Date(dateString);
-    if (Number.isNaN(date.getTime())) return "Not set";
-    const options = { year: "numeric", month: "long", day: "numeric" };
-    return date.toLocaleDateString("en-US", options);
-  };
-
   const handleUpdateStudent = async (studentData) => {
-    if (!userId || !schoolId) return;
+    if (!authUser?.uid || !schoolId) return;
+    if (isStudentSubmitting) return;
+    if (!canEditRoster) {
+      alert("You are not assigned to this resource");
+      return;
+    }
+    if (isReadOnlyView) {
+      alert("This view is read-only. Return to the current term to edit students.");
+      return;
+    }
+
+    const writeSessionId = selectedSessionId || activeSessionId || null;
+    if (!writeSessionId) {
+      alert("No active session is selected. Please set an active session in Admin Settings.");
+      return;
+    }
     
     console.log("Updating student:", { studentData, editingStudent });
-    
-    const updatedStudents = students.map((s) =>
-      s.id === editingStudent.id ? { 
-        ...s, 
-        name: studentData.name,
-        regNumber: studentData.regNumber,
-        sex: studentData.sex,
-        phone: studentData.phone,
-      } : s,
+    if (!editingStudent) return;
+
+    const normalizedInputName = normalizeStudentName(studentData.name);
+    if (!normalizedInputName) {
+      alert("Student name is required.");
+      return;
+    }
+
+    const allClassStudents = await getClassStudents(schoolId, classSelection.class, {
+      sessionId: writeSessionId || classSelection.sessionId,
+      termId: resolvedRosterTermId,
+      includeInactive: true,
+      includeDeleted: true,
+    });
+    const duplicate = (allClassStudents || []).some(
+      (student) =>
+        student.id !== editingStudent.id &&
+        normalizeStudentName(student?.name) === normalizedInputName
     );
-    setStudents(updatedStudents);
+    if (duplicate) {
+      alert("A student with this name already exists in this class.");
+      return;
+    }
     
+    const updatedStudent = {
+      ...editingStudent,
+      name: String(studentData.name || "").replace(/\s+/g, " ").trim(),
+      regNumber: studentData.regNumber,
+      sex: studentData.sex,
+      phone: studentData.phone,
+    };
+    setStudents((prev) =>
+      prev.map((s) => (s.id === editingStudent.id ? updatedStudent : s))
+    );
+    
+    setIsStudentSubmitting(true);
     try {
-      await saveClassStudents(schoolId, classSelection.class, updatedStudents, userId);
-      
-      // Reload from Firebase to ensure consistency
-      const freshStudents = await getClassStudents(schoolId, classSelection.class);
-      setStudents(freshStudents || []);
+      const saveResult = await saveClassStudents(schoolId, classSelection.class, [updatedStudent], authUser.uid, {
+        sessionId: writeSessionId,
+        termId: resolvedRosterTermId,
+        upsertExistingStudent: true,
+        existingRoster: allClassStudents,
+      });
+      if (Array.isArray(saveResult?.students)) {
+        setStudents(applyVisibleRoster(saveResult.students));
+      } else {
+        await loadClassStudents();
+      }
       
       setEditingStudent(null);
       setIsAddModalOpen(false);
     } catch (error) {
       console.error("Error updating student:", error);
       alert("Failed to update student: " + error.message);
-      // Restore previous list if save failed
-      setStudents(students);
+      await loadClassStudents();
+    } finally {
+      setIsStudentSubmitting(false);
     }
   };
 
-  const filteredStudents = students.filter((student) =>
-    student.name.toLowerCase().includes(searchTerm.toLowerCase()),
-  );
+  const handleWithdrawStudent = async (student) => {
+    if (!student?.id || !schoolId) return;
+    if (!canEditRoster) {
+      alert("You are not assigned to this resource");
+      return;
+    }
+    if (isReadOnlyView) {
+      alert("This view is read-only. Student lifecycle actions are disabled.");
+      return;
+    }
+    if (!isStudentActive(student)) return;
+    if (!window.confirm(`Withdraw ${student.name}?`)) return;
+
+    setIsStudentSubmitting(true);
+    try {
+      await withdrawStudent(schoolId, student.id);
+      await loadClassStudents();
+    } catch (error) {
+      console.error("Error withdrawing student:", error);
+      alert("Failed to withdraw student: " + error.message);
+    } finally {
+      setIsStudentSubmitting(false);
+    }
+  };
+
+  const filteredStudents = students
+    .filter((student) =>
+      student.name.toLowerCase().includes(searchTerm.toLowerCase()),
+    )
+    .sort((left, right) => {
+      const leftStatus = String(left?.status || "active").toLowerCase();
+      const rightStatus = String(right?.status || "active").toLowerCase();
+      const leftIsWithdrawn = leftStatus === "withdrawn" || leftStatus === "graduated";
+      const rightIsWithdrawn = rightStatus === "withdrawn" || rightStatus === "graduated";
+
+      if (leftIsWithdrawn !== rightIsWithdrawn) {
+        return leftIsWithdrawn ? -1 : 1;
+      }
+
+      return String(left?.name || "").localeCompare(String(right?.name || ""));
+    });
 
   const getClassLabel = (classId) => {
     const classMap = {
@@ -460,6 +538,25 @@ export default function ClassDashboard() {
   return (
     <div className="min-h-screen p-4 md:p-8 bg-white dark:bg-gray-900">
       {/* Header Section */}
+      {isReadOnlyView && (
+        <div className="mb-4 rounded-lg border border-amber-300 bg-amber-100 px-4 py-3 text-sm font-medium text-amber-800 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+          {isHistoricalView
+            ? "Viewing historical session data. Changes will NOT affect the active session."
+            : isPastTermView
+              ? "Viewing a past term. Student management is read-only until you return to the current term."
+              : "This view is read-only."}
+        </div>
+      )}
+      {!isReadOnlyView && !showInactiveStudents && (
+        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+          Showing active students only. Use "Show Withdrawn" to view lifecycle records.
+        </div>
+      )}
+      {!hasClassAccess && (
+        <div className="mb-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 dark:border-red-700 dark:bg-red-900/20 dark:text-red-300">
+          You are not assigned to this resource.
+        </div>
+      )}
       <div className="">
         <div className="bg-gradient-to-r from-blue-50 to-blue-100 dark:from-gray-800 dark:to-gray-700 rounded-lg p-6 md:p-8 mb-8">
           <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-4 sm:items-center">
@@ -504,7 +601,10 @@ export default function ClassDashboard() {
                 Session
               </p>
               <p className="text-sm font-bold text-black dark:text-white">
-                {classSelection.session}
+                {selectedSessionName ||
+                  (classSelection.session && classSelection.session !== "N/A"
+                    ? classSelection.session
+                    : "Not set")}
               </p>
             </div>
           </div>
@@ -518,20 +618,47 @@ export default function ClassDashboard() {
           <h3 className="text-gray-600 dark:text-gray-300 text-sm font-semibold mb-2">
             Total Students
           </h3>
-          <p className="text-3xl font-bold text-blue-800 dark:text-blue-400">
-            {students.length}
-          </p>
+          {isStudentsLoading ? (
+            <div className="h-9 w-16 animate-pulse rounded-lg bg-blue-200/70 dark:bg-gray-600" />
+          ) : (
+            <p className="text-3xl font-bold text-blue-800 dark:text-blue-400">
+              {students.length}
+            </p>
+          )}
         </div>
 
         {/* Search Input */}
         <div className="">
-          <input
-            type="text"
-            placeholder="Enter student name..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="input w-full"
-          />
+          <div className="relative">
+            <svg
+              className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M21 21l-4.35-4.35m1.85-5.15a7 7 0 11-14 0 7 7 0 0114 0z"
+              />
+            </svg>
+            <input
+              type="text"
+              placeholder="Enter student name..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="input w-full !pl-12 !pr-3"
+              autoComplete="off"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowInactiveStudents((prev) => !prev)}
+            className="mt-3 rounded-lg border border-gray-300 px-4 py-2 text-xs font-semibold text-gray-700 transition-all duration-300 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+          >
+            {showInactiveStudents ? "Hide Withdrawn" : "Show Withdrawn"}
+          </button>
           {/* Add Student Button */}
           <div>
             <div className="mt-3 gap-2  flex justify-between">
@@ -540,7 +667,8 @@ export default function ClassDashboard() {
                   setEditingStudent(null);
                   setIsAddModalOpen(true);
                 }}
-                className="flex items-center gap-2 px-6 py-2 bg-blue-800 hover:bg-blue-900 dark:bg-blue-700 dark:hover:bg-blue-600 text-white font-semibold rounded-lg transition-all duration-300 shadow-lg hover:shadow-xl"
+                disabled={isReadOnlyView || isStudentSubmitting || !canEditRoster}
+                className="flex items-center gap-2 px-6 py-2 bg-blue-800 hover:bg-blue-900 dark:bg-blue-700 dark:hover:bg-blue-600 text-white font-semibold rounded-lg transition-all duration-300 shadow-lg hover:shadow-xl disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 <svg
                   className="w-5 h-5"
@@ -558,35 +686,20 @@ export default function ClassDashboard() {
                 Add Student
               </button>
 
-              {selectedRole === "class_teacher" && (
-                <button
-                  onClick={() => navigate("/class-teacher-access")}
-                  className="px-2 py-2 md:hidden rounded-lg border-2 border-blue-300 dark:border-blue-600 text-blue-700 dark:text-blue-300 font-semibold hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-all duration-300"
-                >
-                  Change Class
-                </button>
-              )}
+            
               <button
                 onClick={() => navigate("/school-dashboard")}
-                className="px-2 py-2 md:hidden rounded-lg border-2 border-gray-300 dark:border-gray-600 text-black dark:text-white font-semibold hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-300" >
-                Back to Dashboard
+                className="px-6 py-2 md:hidden rounded-lg border-2 border-gray-300 dark:border-gray-600 text-black dark:text-white font-semibold hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-300" >
+                Back
               </button>
             </div>
           </div>
         </div>
         <div className="flex-col justify-self-end">
-          {selectedRole === "class_teacher" && (
-            <button
-              onClick={() => navigate("/class-teacher-access")}
-              className="px-6 py-2 mb-2 max-md:hidden rounded-lg border-2 border-blue-300 dark:border-blue-600 text-blue-700 dark:text-blue-300 font-semibold hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-all duration-300"
-            >
-              Change Class
-            </button>
-          )}
           <button
             onClick={() => navigate("/school-dashboard")}
             className="px-6 py-2 max-md:hidden  rounded-lg border-2 border-gray-300 dark:border-gray-600 text-black dark:text-white font-semibold hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-300" >
-            Back to Dashboard
+            Back
           </button>
         </div>
       </div>
@@ -616,7 +729,31 @@ export default function ClassDashboard() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-            {filteredStudents.length > 0 ? (
+            {isStudentsLoading ? (
+              Array.from({ length: 5 }).map((_, index) => (
+                <tr key={`student-skeleton-${index}`}>
+                  <td className="px-4 md:px-6 py-4">
+                    <div className="space-y-2">
+                      <div className="h-4 w-40 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
+                      <div className="h-3 w-20 animate-pulse rounded bg-gray-100 dark:bg-gray-800" />
+                    </div>
+                  </td>
+                  <td className="px-4 md:px-6 py-4">
+                    <div className="flex gap-2">
+                      <div className="h-9 w-9 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700" />
+                      <div className="h-9 w-9 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700" />
+                      <div className="h-9 w-9 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700" />
+                    </div>
+                  </td>
+                  <td className="px-4 md:px-6 py-4">
+                    <div className="flex gap-2">
+                      <div className="h-9 w-9 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700" />
+                      <div className="h-9 w-9 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700" />
+                    </div>
+                  </td>
+                </tr>
+              ))
+            ) : filteredStudents.length > 0 ? (
               filteredStudents.map((student) => (
                 <tr
                   key={student.id}
@@ -628,6 +765,11 @@ export default function ClassDashboard() {
                       <p className="font-medium text-black dark:text-white">
                         {student.name}
                       </p>
+                      <span
+                        className={`inline-flex rounded px-2 py-0.5 text-[10px] font-semibold ${getStatusMeta(student.status).className}`}
+                      >
+                        {getStatusMeta(student.status).label}
+                      </span>
                       {student.regNumber && (
                         <p className="text-xs text-gray-500 dark:text-gray-400">
                           Reg: {student.regNumber}
@@ -638,32 +780,60 @@ export default function ClassDashboard() {
 
                   {/* Action Column */}
                   <td className="px-4 md:px-6 py-4">
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => handleEditStudent(student)}
-                        className="px-3 py-2 bg-blue-600 hover:bg-blue-700 dark:bg-blue-700 dark:hover:bg-blue-600 text-white text-xs font-semibold rounded-lg transition-all duration-300"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => handleDeleteStudent(student.id)}
-                        className="px-3 py-2 bg-red-600 hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600 text-white text-xs font-semibold rounded-lg transition-all duration-300"
-                      >
-                        Del
-                      </button>
-                    </div>
+                    {isReadOnlyLifecycleStudent(student) ? (
+                      <span className="inline-flex rounded bg-gray-100 px-3 py-2 text-xs font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                        Result only
+                      </span>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => handleEditStudent(student)}
+                          disabled={isReadOnlyView || isStudentSubmitting || !canEditRoster}
+                          type="button"
+                          title="Edit student"
+                          aria-label={`Edit ${student.name}`}
+                          className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600 text-white transition-all duration-300 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-blue-700 dark:hover:bg-blue-600"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                        {isStudentActive(student) && (
+                          <button
+                            onClick={() => handleWithdrawStudent(student)}
+                            disabled={isReadOnlyView || isStudentSubmitting || !canEditRoster}
+                            type="button"
+                            title="Withdraw student"
+                            aria-label={`Withdraw ${student.name}`}
+                            className="flex h-9 w-9 items-center justify-center rounded-lg bg-orange-600 text-white transition-all duration-300 hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-orange-700 dark:hover:bg-orange-600"
+                          >
+                            <UserMinus className="h-4 w-4" />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleDeleteStudent(student.id)}
+                          disabled={isReadOnlyView || isStudentSubmitting || !canEditRoster}
+                          type="button"
+                          title="Delete student"
+                          aria-label={`Delete ${student.name}`}
+                          className="flex h-9 w-9 items-center justify-center rounded-lg bg-red-600 text-white transition-all duration-300 hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-red-700 dark:hover:bg-red-600"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    )}
                   </td>
 
                   {/* Result Column */}
                   <td className="px-4 md:px-6 py-4">
-                    <div className="flex gap-2 ">
+                    <div className="flex gap-2">
                       <button
+                        type="button"
+                        title="Preview result"
+                        aria-label={`Preview result for ${student.name}`}
                         onClick={() => {
                           sessionStorage.setItem(
                             "selectedStudent",
                             JSON.stringify(student),
                           );
-                          sessionStorage.setItem("downloadPDF", "false");
                           // Save class info to sessionStorage for result sheet
                           sessionStorage.setItem(
                             "classSelection",
@@ -671,15 +841,21 @@ export default function ClassDashboard() {
                           );
                           navigate("/student-result-sheet");
                         }}
-                        className="px-3 py-2 bg-purple-600 hover:bg-purple-700 dark:bg-purple-700 dark:hover:bg-purple-600 text-white text-xs font-semibold rounded-lg transition-all duration-300"
+                        className="flex h-9 w-9 items-center justify-center rounded-lg bg-purple-600 text-white transition-all duration-300 hover:bg-purple-700 dark:bg-purple-700 dark:hover:bg-purple-600"
                       >
-                        P
+                        <Eye className="h-4 w-4" />
                       </button>
                       <button
+                        type="button"
                         onClick={() => handleDownloadResult(student)}
-                        className="px-3 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-700 dark:hover:bg-green-600 text-white text-xs font-semibold rounded-lg transition-all duration-300"
+                        disabled={downloadingStudentId === String(student.id || "")}
+                        title="Download result"
+                        aria-label={`Download result for ${student.name}`}
+                        className="flex h-9 w-9 items-center justify-center rounded-lg bg-green-600 text-white transition-all duration-300 hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-green-700 dark:hover:bg-green-600"
                       >
-                        D
+                        {downloadingStudentId === String(student.id || "")
+                          ? <Loader2 className="h-4 w-4 animate-spin" />
+                          : <Download className="h-4 w-4" />}
                       </button>
                     </div>
                   </td>
@@ -704,24 +880,17 @@ export default function ClassDashboard() {
       <AddStudent
         isOpen={isAddModalOpen}
         onClose={() => {
+          if (isStudentSubmitting) return;
           setIsAddModalOpen(false);
           setEditingStudent(null);
         }}
         onAdd={handleAddStudent}
         onUpdate={handleUpdateStudent}
         editingStudent={editingStudent}
+        isSubmitting={isStudentSubmitting}
       />
 
-      {/* Student Result Preview Modal */}
-      <StudentResultPreview
-        isOpen={isResultPreviewOpen}
-        onClose={() => {
-          setIsResultPreviewOpen(false);
-          setSelectedStudent(null);
-        }}
-        student={selectedStudent}
-        classData={classSelection}
-      />
+      
     </div>
   );
 }

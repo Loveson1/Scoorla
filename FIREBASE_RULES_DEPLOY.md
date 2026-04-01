@@ -15,71 +15,134 @@ Copy the content below and paste into the Rules Editor:
 ```json
 {
   "rules": {
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        ".write": "auth != null && auth.uid == $uid && (!data.exists() || (newData.child('schoolId').val() == data.child('schoolId').val() && newData.child('role').val() == data.child('role').val()))"
+      }
+    },
     "schools": {
       "$schoolId": {
-        ".read": "auth != null",
-        ".write": "auth != null",
+        ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+        ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
         "profile": {
-          ".read": "auth != null",
-          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId"
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'"
         },
         "classes": {
-          ".read": "auth != null",
-          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId",
-          "$classId": {
-            ".read": "auth != null",
-            ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId"
-          }
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'"
         },
         "subjects": {
-          ".read": "auth != null",
-          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId",
-          "$subjectId": {
-            ".read": "auth != null",
-            ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId"
-          }
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'"
         },
         "students": {
-          ".read": "auth != null",
-          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId",
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
           "$studentId": {
-            ".read": "auth != null",
-            ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId"
+            ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+            ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin' && (newData.exists() || !root.child('indexes').child('studentEnrollments').child($schoolId).child($studentId).exists())",
+            "status": {
+              ".validate": "newData.isString() && (newData.val() == 'active' || newData.val() == 'inactive' || newData.val() == 'graduated' || newData.val() == 'transferred' || newData.val() == 'withdrawn' || newData.val() == 'archived')"
+            },
+            "isDeleted": {
+              ".validate": "newData.isBoolean()"
+            },
+            "deletedAt": {
+              ".validate": "newData.val() == null || newData.isNumber() || newData.isString()"
+            },
+            "createdAt": {
+              ".validate": "newData.isNumber() || newData.isString()"
+            },
+            "updatedAt": {
+              ".validate": "newData.isNumber() || newData.isString()"
+            }
           }
+        },
+        "sessions": {
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'"
+        },
+        "terms": {
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'"
+        },
+        "enrollments": {
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'"
         },
         "scores": {
-          "$classId": {
-            "$subjectId": {
-              ".read": "auth != null",
-              ".write": "auth != null"
-            }
-          }
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'"
         },
         "results": {
-          "$classId": {
-            ".read": "auth != null",
-            ".write": "auth != null",
-            "$studentId": {
-              ".read": "auth != null",
-              ".write": "auth != null"
-            }
-          }
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'"
         },
         "accessCodes": {
-          ".read": "auth != null",
-          ".write": "auth != null",
-          "classTeacherCodes": {
-            ".read": "auth != null",
-            ".write": "auth != null"
-          },
-          "subjectTeacherCodes": {
-            ".read": "auth != null",
-            ".write": "auth != null"
-          }
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'"
         },
         "settings": {
-          ".read": "auth != null",
-          ".write": "auth != null"
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'"
+        }
+      }
+    },
+    "indexes": {
+      "sessionEnrollments": {
+        "$schoolId": {
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'"
+        }
+      },
+      "classSessionEnrollments": {
+        "$schoolId": {
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'"
+        }
+      },
+      "studentEnrollments": {
+        "$schoolId": {
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'"
+        }
+      },
+      "termScores": {
+        "$schoolId": {
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'"
+        }
+      },
+      "enrollmentTermScores": {
+        "$schoolId": {
+          ".read": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('schoolId').val() == $schoolId && root.child('users').child(auth.uid).child('role').val() == 'admin'"
+        }
+      },
+      "sessionSchools": {
+        "$sessionId": {
+          ".read": "auth != null && data.val() == root.child('users').child(auth.uid).child('schoolId').val() && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() == 'admin' && (newData.val() == root.child('users').child(auth.uid).child('schoolId').val() || !newData.exists())"
+        }
+      },
+      "enrollmentSchools": {
+        "$enrollmentId": {
+          ".read": "auth != null && data.val() == root.child('users').child(auth.uid).child('schoolId').val() && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() == 'admin' && (newData.val() == root.child('users').child(auth.uid).child('schoolId').val() || !newData.exists())"
+        }
+      },
+      "scoreSchools": {
+        "$scoreId": {
+          ".read": "auth != null && data.val() == root.child('users').child(auth.uid).child('schoolId').val() && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() == 'admin' && (newData.val() == root.child('users').child(auth.uid).child('schoolId').val() || !newData.exists())"
+        }
+      },
+      "scoreMeta": {
+        "$scoreId": {
+          ".read": "auth != null && data.child('schoolId').val() == root.child('users').child(auth.uid).child('schoolId').val() && root.child('users').child(auth.uid).child('role').val() == 'admin'",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() == 'admin' && (!newData.exists() || newData.child('schoolId').val() == root.child('users').child(auth.uid).child('schoolId').val())"
         }
       }
     }
@@ -119,11 +182,11 @@ Copy the content below and paste into the Rules Editor:
 
 ### Class/Subject/Student Data
 - Only school admins can read/write
-- Teachers can only read (for future feature)
+- Student lifecycle fields are validated (`status`, `isDeleted`, timestamps)
+- Student hard-delete is blocked if enrollment history exists (`indexes/studentEnrollments`)
 
 ### Scores
-- Admins can read/write
-- Teachers can read and write scores for their subjects
+- Only admins can read/write
 
 ### Results
 - Only admins can read/write results
@@ -164,4 +227,6 @@ Copy the content below and paste into the Rules Editor:
 3. ✅ Follow testing steps in PHASE_4_DEPLOYMENT_GUIDE.md
 4. ✅ Run `npm run dev` to start app
 5. ✅ Execute all 8 test scenarios
+
+
 

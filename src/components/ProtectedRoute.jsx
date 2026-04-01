@@ -1,98 +1,100 @@
-import { useState, useEffect } from "react";
-import { Navigate, useLocation } from "react-router-dom";
-import { getCurrentUser } from "../utils/authUtils";
-import { isOnboardingComplete } from "../utils/onboardingUtils";
+import { useEffect, useState } from "react";
+import { Navigate } from "react-router-dom";
 import { checkEmailVerification } from "../utils/authUtils";
-import { auth, firestore } from "../firebase";
-import { onAuthStateChanged } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import { isOnboardingComplete } from "../utils/onboardingUtils";
+import { useAuthContext } from "../context/AuthContext";
 
 /**
- * ProtectedRoute component that enforces auth, email verification, onboarding, and role selection
+ * Guard app routes with auth + verification + onboarding + role checks.
  */
 export default function ProtectedRoute({
   children,
   allowUnonboarded = false,
   requireVerified = true,
+  allowDisabledSchool = false,
+  allowedRoles = [],
 }) {
-  const location = useLocation();
-  const [loading, setLoading] = useState(true);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const {
+    authUser,
+    role,
+    schoolId,
+    schoolDisabled,
+    isPlatformSuperAdmin,
+    isLoading,
+  } = useAuthContext();
+  const isAdminRole = role === "admin";
+  const enforceEmailVerification = requireVerified && isAdminRole;
   const [emailVerified, setEmailVerified] = useState(false);
-  const [roleSelected, setRoleSelected] = useState(false);
   const [onboardingComplete, setOnboardingComplete] = useState(false);
+  const [isCheckingState, setIsCheckingState] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (authUser) => {
+    let isMounted = true;
+
+    const resolveState = async () => {
+      if (!authUser) {
+        if (isMounted) {
+          setEmailVerified(false);
+          setOnboardingComplete(false);
+          setIsCheckingState(false);
+        }
+        return;
+      }
+
       try {
-        if (!authUser) {
-          setIsAuthenticated(false);
-          setLoading(false);
-          return;
+        if (enforceEmailVerification) {
+          const verified = await checkEmailVerification();
+          if (!isMounted) return;
+          setEmailVerified(!!verified);
+        } else {
+          setEmailVerified(true);
         }
 
-        setIsAuthenticated(true);
-
-        const isVerified = await checkEmailVerification();
-        setEmailVerified(isVerified);
-
-        const roleKey = `selectedRole_${authUser.uid}`;
-        const selectedRole = localStorage.getItem(roleKey);
-        setRoleSelected(!!selectedRole);
-
-        let isComplete = false;
-        try {
-          const userRef = doc(firestore, "users", authUser.uid);
-          const userSnap = await getDoc(userRef);
-          if (userSnap.exists() && userSnap.data().schoolId) {
-            isComplete = true;
-          } else {
-            isComplete = await isOnboardingComplete();
-          }
-        } catch (error) {
-          console.error("Error checking onboarding:", error);
-          isComplete = await isOnboardingComplete();
+        if (schoolId) {
+          setOnboardingComplete(true);
+        } else {
+          const complete = await isOnboardingComplete();
+          if (!isMounted) return;
+          setOnboardingComplete(!!complete);
         }
-
-        setOnboardingComplete(isComplete);
-        setLoading(false);
       } catch (error) {
-        console.error("Error checking auth status:", error);
-        setLoading(false);
-      }
-    });
-
-    const handleStorageChange = (e) => {
-      const user = getCurrentUser();
-      if (user && e.key === `selectedRole_${user.uid}`) {
-        setRoleSelected(!!e.newValue);
+        if (!isMounted) return;
+        setEmailVerified(enforceEmailVerification ? !!authUser?.emailVerified : true);
+        setOnboardingComplete(!!schoolId);
+        console.error("Error resolving route guard state:", error);
+      } finally {
+        if (isMounted) setIsCheckingState(false);
       }
     };
 
-    window.addEventListener("storage", handleStorageChange);
-
+    setIsCheckingState(true);
+    resolveState();
     return () => {
-      unsubscribe();
-      window.removeEventListener("storage", handleStorageChange);
+      isMounted = false;
     };
-  }, []);
+  }, [authUser, schoolId, enforceEmailVerification]);
 
-  if (loading) {
+  if (isLoading || isCheckingState) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gradient-to-r from-blue-50 to-blue-100 dark:from-gray-900 dark:to-gray-800">
+      <div className="flex h-screen items-center justify-center bg-gradient-to-r from-blue-50 to-blue-100 dark:from-gray-900 dark:to-gray-800">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600"></div>
           <p className="text-gray-700 dark:text-gray-300">Loading...</p>
         </div>
       </div>
     );
   }
 
-  if (!isAuthenticated) {
+  if (!authUser) {
     return <Navigate to="/login" replace />;
   }
 
-  if (requireVerified && !emailVerified) {
+  if (isPlatformSuperAdmin) {
+    return <Navigate to="/platform" replace />;
+  }
+
+  const isOffline = typeof navigator !== "undefined" && navigator.onLine === false;
+  if (enforceEmailVerification && !emailVerified && !isOffline) {
     return <Navigate to="/verify-email" replace />;
   }
 
@@ -100,33 +102,20 @@ export default function ProtectedRoute({
     return children;
   }
 
-  if (requireVerified && emailVerified && !onboardingComplete) {
+  if (enforceEmailVerification && emailVerified && !onboardingComplete && !isOffline) {
     return <Navigate to="/welcome" replace />;
   }
 
-  const user = getCurrentUser();
-  const roleInStorage = user ? localStorage.getItem(`selectedRole_${user.uid}`) : null;
-  const hasRole = roleSelected || !!roleInStorage;
-
-  if (requireVerified && emailVerified && onboardingComplete && !hasRole) {
-    return <Navigate to="/select-role" replace />;
+  if (!allowUnonboarded && onboardingComplete && !role) {
+    return <Navigate to="/access-denied" replace />;
   }
 
-  const path = location.pathname;
-  if (roleInStorage === "class_teacher") {
-    const classTeacherAllowedPaths = ["/class-dashboard", "/student-result-sheet"];
-    const isAllowed = classTeacherAllowedPaths.some((prefix) => path.startsWith(prefix));
-    if (!isAllowed) {
-      return <Navigate to="/class-dashboard" replace />;
-    }
+  if (!allowDisabledSchool && schoolId && schoolDisabled) {
+    return <Navigate to="/school-disabled" replace />;
   }
 
-  if (roleInStorage === "subject_teacher") {
-    const subjectTeacherAllowedPaths = ["/record-dashboard", "/result-preview", "/student-result-sheet"];
-    const isAllowed = subjectTeacherAllowedPaths.some((prefix) => path.startsWith(prefix));
-    if (!isAllowed) {
-      return <Navigate to="/record-dashboard" replace />;
-    }
+  if (allowedRoles.length > 0 && !allowedRoles.includes(role)) {
+    return <Navigate to="/access-denied" replace />;
   }
 
   return children;

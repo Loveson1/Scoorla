@@ -1,51 +1,60 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { saveClassSelection, getSession, getCustomClasses, getCurrentTerm } from "./utils/school-data";
-import { getCurrentUser } from "../utils/authUtils";
-import { getUserData } from "../utils/userSession";
+import {
+  saveClassSelection,
+  getCustomClasses,
+} from "./utils/school-data";
+import { useSessionContext } from "../context/SessionContext";
+import { useAuthContext } from "../context/AuthContext";
 
 export default function ClassSelectionModal({ isOpen, onClose }) {
   const navigate = useNavigate();
-  const [userId, setUserId] = useState(null);
-  const [schoolId, setSchoolId] = useState(null);
+  const {
+    selectedSessionId,
+    selectedSessionName,
+    selectedTermId,
+    activeSessionId,
+    activeTermId,
+  } = useSessionContext();
+  const { isAdmin, canAccessClass, authUser, schoolId } = useAuthContext();
   const [classes, setClasses] = useState([]);
 
   useEffect(() => {
-    const loadData = async () => {
-      const currentUser = getCurrentUser();
-      if (currentUser) {
-        setUserId(currentUser.uid);
-        
-        // Get schoolId from Firestore
-        const userData = await getUserData(currentUser.uid);
-        if (userData?.schoolId) {
-          setSchoolId(userData.schoolId);
-          // Load classes for this school
-          const customClasses = getCustomClasses(userData.schoolId);
-          setClasses(customClasses || []);
-        }
-      }
-    };
-    
     if (isOpen) {
-      loadData();
+      const customClasses = schoolId ? getCustomClasses(schoolId) : [];
+      const allClasses = customClasses || [];
+      const filtered = isAdmin
+        ? allClasses
+        : allClasses.filter((cls) => canAccessClass(cls?.id || cls));
+      setClasses(filtered);
     }
-  }, [isOpen]);
+  }, [isOpen, isAdmin, canAccessClass, schoolId]);
 
   const handleGoToClass = (selectedClass) => {
-    if (!userId) {
+    if (!authUser?.uid) {
       alert("User not found");
       return;
     }
+    if (!isAdmin && !canAccessClass(selectedClass)) {
+      alert("You are not assigned to this resource");
+      return;
+    }
 
+    const resolvedSessionId = selectedSessionId || activeSessionId || "";
+    if (!resolvedSessionId) {
+      alert("No active session is selected. Ask admin to set an active session first.");
+      return;
+    }
+    const resolvedSessionName = selectedSessionName || "Not set";
     const classData = {
       class: selectedClass,
-      term: getCurrentTerm(schoolId) || "term1", // Use admin-preset term
-      session: getSession(),
+      term: selectedTermId || activeTermId || "term1",
+      session: resolvedSessionName,
+      sessionId: resolvedSessionId,
     };
 
-    console.log("Saving class selection:", { classData, userId });
-    saveClassSelection(classData, userId);
+    console.log("Saving class selection:", { classData, userId: authUser.uid });
+    saveClassSelection(classData, authUser.uid);
     navigate("/class-dashboard");
     onClose();
   };
@@ -78,7 +87,8 @@ export default function ClassSelectionModal({ isOpen, onClose }) {
                 <button
                   key={cls.id}
                   onClick={() => handleGoToClass(cls.id)}
-                  className="py-3 px-3 rounded-lg font-medium transition-all duration-300 text-sm md:text-base bg-blue-800 hover:bg-blue-900 dark:bg-blue-700 dark:hover:bg-blue-600 text-white shadow-lg hover:shadow-xl"
+                  className="py-2 px-3 rounded-lg font-medium transition-all duration-300 text-sm md:text-base bg-gray-100 dark:bg-gray-700 text-black dark:text-white border border-gray-300 dark:border-gray-600 hover:border-blue-800"
+
                 >
                   {cls.label}
                 </button>
@@ -90,3 +100,4 @@ export default function ClassSelectionModal({ isOpen, onClose }) {
     </div>
   );
 }
+

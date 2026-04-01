@@ -4,8 +4,9 @@
  * Uses sessionStorage for temporary in-browser state and Firestore for persistent user data
  */
 
-import { auth, firestore } from "../firebase";
+import { firestore } from "../firebase";
 import { doc, setDoc, getDoc, updateDoc } from "firebase/firestore";
+import { ensureUserScope, setCachedUserScope } from "./userScopeCache";
 
 /**
  * Initialize user session
@@ -19,6 +20,7 @@ export const initializeUserSession = async (userCredential, schoolId, role = "te
   try {
     const user = userCredential.user || userCredential;
     const userRef = doc(firestore, "users", user.uid);
+    const nowIso = new Date().toISOString();
 
     // Check if user doc exists
     const existingDoc = await getDoc(userRef);
@@ -26,8 +28,10 @@ export const initializeUserSession = async (userCredential, schoolId, role = "te
     if (existingDoc.exists()) {
       // Update existing user
       await updateDoc(userRef, {
-        lastLogin: new Date().toISOString(),
-        isActive: true,
+        lastLogin: nowIso,
+        lastLoginAt: nowIso,
+        isOnline: true,
+        updatedAt: nowIso,
       });
     } else {
       // Create new user record
@@ -37,14 +41,23 @@ export const initializeUserSession = async (userCredential, schoolId, role = "te
         displayName: user.displayName || "User",
         schoolId,
         role,
-        createdAt: new Date().toISOString(),
-        lastLogin: new Date().toISOString(),
+        createdAt: nowIso,
+        lastLogin: nowIso,
+        lastLoginAt: nowIso,
+        isOnline: true,
         isActive: true,
       });
     }
 
     console.log(`✅ User session initialized: ${user.uid}`);
     
+    setCachedUserScope(user.uid, {
+      schoolId,
+      role,
+      email: user.email,
+      isActive: true,
+    });
+
     return {
       uid: user.uid,
       email: user.email,
@@ -65,8 +78,10 @@ export const initializeUserSession = async (userCredential, schoolId, role = "te
  */
 export const getUserSession = async (uid) => {
   try {
-    const userDoc = await getDoc(doc(firestore, "users", uid));
-    return userDoc.exists() ? userDoc.data() : null;
+    return await ensureUserScope(uid, {
+      screen: "UserSession",
+      action: "get_user_session",
+    });
   } catch (error) {
     console.error("Error fetching user session:", error);
     return null;
@@ -114,6 +129,21 @@ export const clearSessionState = (key) => {
   }
 };
 
+export const clearAllSessionState = () => {
+  try {
+    const keysToRemove = [];
+    for (let index = 0; index < sessionStorage.length; index += 1) {
+      const key = sessionStorage.key(index);
+      if (String(key || "").startsWith("session_")) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach((key) => sessionStorage.removeItem(key));
+  } catch (error) {
+    console.error("Error clearing all session state:", error);
+  }
+};
+
 /**
  * Store persistent user data
  * @param {string} uid - User UID
@@ -142,38 +172,14 @@ export const setUserData = async (uid, schoolId, data) => {
  */
 export const getUserData = async (uid) => {
   try {
-    const userDoc = await getDoc(doc(firestore, "users", uid));
-    return userDoc.exists() ? userDoc.data() : null;
+    return await ensureUserScope(uid, {
+      screen: "UserSession",
+      action: "get_user_data",
+    });
   } catch (error) {
     console.error("Error fetching user data:", error);
     return null;
   }
-};
-
-/**
- * Store selected role temporarily 
- * @param {string} uid - User UID
- * @param {string} role - Role selected
- */
-export const setSelectedRole = (uid, role) => {
-  setSessionState(`selectedRole_${uid}`, role);
-};
-
-/**
- * Get selected role
- * @param {string} uid - User UID
- * @returns {string|null}
- */
-export const getSelectedRole = (uid) => {
-  return getSessionState(`selectedRole_${uid}`);
-};
-
-/**
- * Clear selected role
- * @param {string} uid - User UID
- */
-export const clearSelectedRole = (uid) => {
-  clearSessionState(`selectedRole_${uid}`);
 };
 
 /**
@@ -220,17 +226,23 @@ export const getSelectedSubject = (uid) => {
 export const endUserSession = async (uid) => {
   try {
     // Clear all session state
-    clearSelectedRole(uid);
     clearSessionState(`selectedClass_${uid}`);
     clearSessionState(`selectedSubject_${uid}`);
     clearSessionState(`adminVerified_${uid}`);
 
-    // Optionally update last logout time
+    // Update session telemetry without disabling the account.
     const userRef = doc(firestore, "users", uid);
-    await updateDoc(userRef, {
-      lastLogout: new Date().toISOString(),
-      isActive: false,
-    });
+    const nowIso = new Date().toISOString();
+    await setDoc(
+      userRef,
+      {
+        lastLogout: nowIso,
+        lastLogoutAt: nowIso,
+        isOnline: false,
+        updatedAt: nowIso,
+      },
+      { merge: true }
+    );
 
     console.log(`✅ User session ended: ${uid}`);
   } catch (error) {
@@ -254,9 +266,6 @@ export default {
   getUserData,
   
   // Specific session helpers
-  setSelectedRole,
-  getSelectedRole,
-  clearSelectedRole,
   setSelectedClass,
   getSelectedClass,
   setSelectedSubject,

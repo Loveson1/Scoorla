@@ -17,7 +17,8 @@ import {
   signOut,
   updateProfile,
 } from "firebase/auth";
-import { doc, setDoc, getDoc } from "firebase/firestore";
+import { doc, setDoc } from "firebase/firestore";
+import { ensureUserScope } from "./userScopeCache";
 
 /**
  * Register a new admin account
@@ -79,12 +80,13 @@ export const adminLogin = async (email, password) => {
     const user = userCredential.user;
 
     // Verify admin record exists and get metadata
-    const userDoc = await getDoc(doc(firestore, "users", user.uid));
-    if (!userDoc.exists()) {
+    const userData = await ensureUserScope(user.uid, {
+      screen: "AdminAuth",
+      action: "admin_login_profile",
+    });
+    if (!userData) {
       throw new Error("Admin account not found");
     }
-
-    const userData = userDoc.data();
     if (userData.role !== "admin") {
       throw new Error("Not authorized as admin");
     }
@@ -152,10 +154,11 @@ export const adminLogout = async () => {
  */
 export const getAdminInfo = async (uid) => {
   try {
-    const userDoc = await getDoc(doc(firestore, "users", uid));
-    if (!userDoc.exists()) return null;
-
-    const userData = userDoc.data();
+    const userData = await ensureUserScope(uid, {
+      screen: "AdminAuth",
+      action: "get_admin_info",
+    });
+    if (!userData) return null;
     if (userData.role !== "admin") return null;
 
     return userData;

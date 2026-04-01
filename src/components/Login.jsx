@@ -1,12 +1,17 @@
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, useLocation, Link } from "react-router-dom";
 import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "../firebase";
+import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
+import { auth, firestore } from "../firebase";
 import { Eye, EyeOff } from "lucide-react";
 import { isOnboardingComplete } from "../utils/onboardingUtils";
+import { isSuperAdminUser } from "../platform/platformService";
+import { loadSchoolDirectoryRecord } from "../utils/schoolDirectoryService";
+import { logoutUser } from "../utils/authUtils";
 
 export default function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -14,6 +19,7 @@ export default function Login() {
     email: "",
     password: "",
   });
+  const isPlatformLogin = location.pathname.startsWith("/platform");
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -47,10 +53,68 @@ export default function Login() {
         form.email,
         form.password,
       );
+      const signedInUser = userCredential.user;
+      const hasPlatformAccess = await isSuperAdminUser(signedInUser.uid);
+      if (hasPlatformAccess) {
+        localStorage.setItem("userId", signedInUser.uid);
+        localStorage.setItem("userEmail", signedInUser.email);
+        setForm({
+          email: "",
+          password: "",
+        });
+        navigate("/platform", { replace: true });
+        return;
+      }
+
+      if (isPlatformLogin) {
+        await logoutUser();
+        setError("This account does not have platform super admin access.");
+        setLoading(false);
+        return;
+      }
+
+      const userRef = doc(firestore, "users", signedInUser.uid);
+
+      // Keep account lifecycle separate from login session state.
+      // Also recover legacy admin accounts that were unintentionally marked inactive.
+      try {
+        const userSnapshot = await getDoc(userRef);
+        const userProfile = userSnapshot.exists() ? userSnapshot.data() || {} : {};
+        const userSchoolId = String(userProfile?.schoolId || "").trim();
+        if (userSchoolId) {
+          const schoolRecord = await loadSchoolDirectoryRecord(userSchoolId);
+          if (schoolRecord?.status === "disabled") {
+            await logoutUser();
+            setError("This school account is temporarily disabled. Contact support.");
+            setLoading(false);
+            return;
+          }
+        }
+        const roleToken = String(userProfile?.role || "").trim().toLowerCase();
+        const hasSchool = String(userProfile?.schoolId || "").trim().length > 0;
+        const needsRoleRecovery = !roleToken && hasSchool;
+        const shouldForceActive = roleToken === "admin" || needsRoleRecovery;
+
+        await setDoc(
+          userRef,
+          {
+            uid: signedInUser.uid,
+            email: signedInUser.email || "",
+            isOnline: true,
+            lastLoginAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+            ...(shouldForceActive ? { isActive: true } : {}),
+            ...(needsRoleRecovery ? { role: "admin" } : {}),
+          },
+          { merge: true }
+        );
+      } catch (profileTouchError) {
+        console.warn("Unable to update login telemetry:", profileTouchError);
+      }
 
       // Store user info in localStorage
-      localStorage.setItem("userId", userCredential.user.uid);
-      localStorage.setItem("userEmail", userCredential.user.email);
+      localStorage.setItem("userId", signedInUser.uid);
+      localStorage.setItem("userEmail", signedInUser.email);
 
       // Reset form
       setForm({
@@ -59,10 +123,10 @@ export default function Login() {
       });
 
       // Check if email is verified
-      if (!userCredential.user.emailVerified) {
+      if (!signedInUser.emailVerified) {
         // Email not verified, redirect to verification page
         navigate("/verify-email", {
-          state: { email: userCredential.user.email },
+          state: { email: signedInUser.email },
         });
         return;
       }
@@ -70,8 +134,8 @@ export default function Login() {
       // Check onboarding status and redirect accordingly
       const isComplete = await isOnboardingComplete();
       if (isComplete) {
-        // User already completed onboarding, go to role selection
-        navigate("/select-role", { replace: true });
+        // User already completed onboarding, go to dashboard
+        navigate("/school-dashboard", { replace: true });
       } else {
         // User needs to complete onboarding, go to welcome page
         navigate("/welcome", { replace: true });
@@ -225,6 +289,15 @@ export default function Login() {
               Sign Up
             </Link>
           </p>
+          <p className="mt-3 text-center text-gray-600 dark:text-gray-300 text-sm">
+            Teacher login?{" "}
+            <Link
+              to="/teacher-login"
+              className="text-blue-800 dark:text-blue-400 font-semibold hover:underline transition-colors"
+            >
+              Use Staff ID
+            </Link>
+          </p>
         </div>
 
         {/* Footer Info */}
@@ -235,7 +308,7 @@ export default function Login() {
               href="mailto:support@resulta.com"
               className="hover:underline transition-colors"
             >
-              support@resulta.com
+              support@scoorla.com
             </a>
           </p>
         </div>

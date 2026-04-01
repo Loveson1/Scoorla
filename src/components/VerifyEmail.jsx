@@ -6,6 +6,7 @@ import {
   sendVerificationEmail,
   checkEmailVerification,
 } from "../utils/authUtils";
+import { isOnboardingComplete } from "../utils/onboardingUtils";
 
 export default function VerifyEmail() {
   const navigate = useNavigate();
@@ -77,9 +78,10 @@ export default function VerifyEmail() {
         setSuccessMessage("Email verified successfully! Redirecting...");
         
         setTimeout(() => {
-          // Always go to welcome after email verification
-          // Welcome page will handle the onboarding flow
-          navigate("/welcome");
+          // Route based on onboarding completion to avoid redirect loops.
+          isOnboardingComplete().then((complete) => {
+            navigate(complete ? "/school-dashboard" : "/welcome");
+          });
         }, 2000);
       } else {
         setError("Email not verified yet. Please check your inbox.");
@@ -96,8 +98,9 @@ export default function VerifyEmail() {
   useEffect(() => {
     if (verified) {
       const timer = setTimeout(() => {
-        // Always go to welcome after email verification
-        navigate("/welcome");
+        isOnboardingComplete().then((complete) => {
+          navigate(complete ? "/school-dashboard" : "/welcome");
+        });
       }, 2000);
       return () => clearTimeout(timer);
     }

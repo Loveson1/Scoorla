@@ -1,62 +1,14 @@
 import { useState, useEffect } from "react";
 import { Sun, Moon, Menu, GraduationCap, LogOut } from "lucide-react";
-import { getSchoolData } from "./utils/school-data";
-import { getUserData } from "../utils/userSession";
 import LogoutConfirm from "./LogoutConfirm";
-import { isUserAuthenticated, getCurrentUser } from "../utils/authUtils";
+import { isUserAuthenticated } from "../utils/authUtils";
+import { useSchoolBootstrap } from "../context/SchoolBootstrapContext";
 
 export default function Navbar({ onMenuClick }) {
   const [darkMode, setDarkMode] = useState(false);
-  const [schoolData, setSchoolData] = useState({});
   const [showLogoutModal, setShowLogoutModal] = useState(false);
-  const [userId, setUserId] = useState(null);
   const isAuthenticated = isUserAuthenticated();
-
-  // Get current user and load school data
-  useEffect(() => {
-    const loadSchoolData = async () => {
-      try {
-        const currentUser = getCurrentUser();
-        if (currentUser) {
-          setUserId(currentUser.uid);
-          // Get schoolId from userData
-          const userData = await getUserData(currentUser.uid);
-          if (userData && userData.schoolId) {
-            // Load school data using schoolId
-            const data = await getSchoolData(userData.schoolId);
-            setSchoolData(data || {});
-          }
-        }
-      } catch (error) {
-        console.error("Error loading school data:", error);
-        setSchoolData({});
-      }
-    };
-    
-    loadSchoolData();
-  }, []);
-
-  // Update school data when component mounts or when storage changes
-  useEffect(() => {
-    const updateSchoolData = async () => {
-      if (userId) {
-        try {
-          const userData = await getUserData(userId);
-          if (userData && userData.schoolId) {
-            const data = await getSchoolData(userData.schoolId);
-            setSchoolData(data || {});
-          }
-        } catch (error) {
-          console.error("Error updating school data:", error);
-        }
-      }
-    };
-
-    // Listen for storage changes (when logo is updated)
-    window.addEventListener("storage", updateSchoolData);
-    
-    return () => window.removeEventListener("storage", updateSchoolData);
-  }, [userId]);
+  const { schoolData } = useSchoolBootstrap();
 
   // toggle dark mode
   useEffect(() => {

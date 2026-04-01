@@ -19,8 +19,6 @@ export default function Signup() {
     confirmPassword: "",
   });
 
-  const [touched, setTouched] = useState({});
-
   // Validation functions
   const validateEmail = (email) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -74,14 +72,6 @@ export default function Signup() {
     }
   };
 
-  const handleBlur = (e) => {
-    const { name } = e.target;
-    setTouched((prev) => ({
-      ...prev,
-      [name]: true,
-    }));
-  };
-
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -127,7 +117,6 @@ export default function Signup() {
         password: "",
         confirmPassword: "",
       });
-      setTouched({});
 
       // Redirect to verify email page
       navigate("/verify-email", { state: { email: userCredential.user.email } });
@@ -174,7 +163,6 @@ export default function Signup() {
                 name="schoolName"
                 value={form.schoolName}
                 onChange={handleChange}
-                onBlur={handleBlur}
                 placeholder="Enter your school name"
                 className="input w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white dark:border-gray-600"
               />
@@ -192,7 +180,6 @@ export default function Signup() {
                 name="email"
                 value={form.email}
                 onChange={handleChange}
-                onBlur={handleBlur}
                 placeholder="admin@school.com"
                 className="input w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white dark:border-gray-600"
               />
@@ -213,7 +200,6 @@ export default function Signup() {
                   name="password"
                   value={form.password}
                   onChange={handleChange}
-                  onBlur={handleBlur}
                   placeholder="Enter password (min 8 characters)"
                   className="input w-full pr-10 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white dark:border-gray-600"
                 />
@@ -247,7 +233,6 @@ export default function Signup() {
                   name="confirmPassword"
                   value={form.confirmPassword}
                   onChange={handleChange}
-                  onBlur={handleBlur}
                   placeholder="Re-enter your password"
                   className="input w-full pr-10 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white dark:border-gray-600"
                 />

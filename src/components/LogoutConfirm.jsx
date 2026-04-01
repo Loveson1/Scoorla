@@ -41,13 +41,13 @@ export default function LogoutConfirm({ isOpen, onClose, onConfirm }) {
         <div className="flex gap-3">
           <button
             onClick={onClose}
-            className="flex-1 px-4 py-3 border-2 border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-semibold rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+            className="flex-1 px-4 py-2 border-2 border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-semibold rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
           >
             Cancel
           </button>
           <button
             onClick={handleLogout}
-            className="flex-1 px-4 py-3 bg-red-600 hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600 text-white font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
+            className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600 text-white font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
           >
             <LogOut className="w-4 h-4" />
             <span>Sign Out</span>
