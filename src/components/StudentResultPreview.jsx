@@ -1,9 +1,7 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { jsPDF } from "jspdf";
 import {
   getSchoolData,
-  getClassSelection,
   getSubjectsByClass,
   getScores,
   calculateGrade,
@@ -68,7 +66,9 @@ export default function StudentResultPreview({
   };
 
   const formatDate = (dateString) => {
+    if (!dateString) return "Not set";
     const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) return "Not set";
     const options = { year: "numeric", month: "long", day: "numeric" };
     return date.toLocaleDateString("en-US", options);
   };
@@ -148,7 +148,7 @@ export default function StudentResultPreview({
             logoSize,
             logoSize
           );
-        } catch (e) {
+        } catch {
           // Logo conversion failed, continue without it
         }
       }
@@ -195,7 +195,7 @@ export default function StudentResultPreview({
       pdf.text(`Reg No: ${student.regNumber || "N/A"}`, col2, yPosition);
       yPosition += 5;
 
-      pdf.text(`Sex: ${student.sex || "N/A"}`, col1, yPosition);
+      pdf.text(`Sex: ${student.sex || student.gender || "N/A"}`, col1, yPosition);
       pdf.text(`Class: ${getClassLabel(classData.class)}`, col2, yPosition);
       yPosition += 5;
 
@@ -271,7 +271,7 @@ export default function StudentResultPreview({
       pdf.setFontSize(9);
       pdf.setFont(undefined, "italic");
       pdf.text(
-        `Next term begins: ${formatDate(adminSettings.nextTermBegins)}`,
+        `Next term begins: ${formatDate(adminSettings?.nextTermBegins)}`,
         margin,
         yPosition
       );
@@ -376,7 +376,7 @@ export default function StudentResultPreview({
               Sex
             </p>
             <p className="text-lg font-bold text-black dark:text-white">
-              {student.sex || "N/A"}
+              {student.sex || student.gender || "N/A"}
             </p>
           </div>
           <div>
@@ -455,7 +455,7 @@ export default function StudentResultPreview({
           <p className="text-sm italic text-gray-700 dark:text-gray-300">
             Next term begins:{" "}
             <span className="font-semibold">
-              {formatDate(adminSettings.nextTermBegins)}
+              {formatDate(adminSettings?.nextTermBegins)}
             </span>
           </p>
         </div>

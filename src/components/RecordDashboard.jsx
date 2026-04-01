@@ -20,6 +20,7 @@ export default function RecordDashboard() {
   const [students, setStudents] = useState([]);
   const [scores, setScores] = useState({});
   const [isLoading, setIsLoading] = useState(true);
+  const [selectedRole, setSelectedRole] = useState(null);
 
   // Load user and school data on mount
   useEffect(() => {
@@ -32,6 +33,7 @@ export default function RecordDashboard() {
         }
 
         setUserId(currentUser.uid);
+        setSelectedRole(localStorage.getItem(`selectedRole_${currentUser.uid}`));
 
         // Get schoolId from user document
         const userData = await getUserData(currentUser.uid);
@@ -78,9 +80,12 @@ export default function RecordDashboard() {
 
   const getTermLabel = (termId) => {
     const termMap = {
-      "1st": "1st Term",
-      "2nd": "2nd Term",
-      "3rd": "3rd Term",
+      "term1": "First Term",
+      "term2": "Second Term",
+      "term3": "Third Term",
+      "1st": "First Term",
+      "2nd": "Second Term",
+      "3rd": "Third Term",
     };
     return termMap[termId] || termId;
   };
@@ -334,6 +339,14 @@ export default function RecordDashboard() {
 
       {/* Action Buttons */}
       <div className="flex gap-4 justify-center">
+        {selectedRole === "subject_teacher" && (
+          <button
+            onClick={() => navigate("/subject-teacher-access")}
+            className="px-8 py-2 border-2 border-blue-300 dark:border-blue-600 text-blue-700 dark:text-blue-300 font-semibold rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-all duration-300"
+          >
+            Change Subject
+          </button>
+        )}
         <button
           onClick={() => navigate("/school-dashboard")}
           className="px-8 py-2 border-2 border-gray-300 dark:border-gray-600 text-black dark:text-white font-semibold rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-300"

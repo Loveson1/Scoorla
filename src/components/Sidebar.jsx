@@ -1,26 +1,43 @@
-import { X, BookOpen, Settings, BarChart3, FolderOpen } from "lucide-react";
+import { X, BookOpen, Settings, BarChart3, FolderOpen, Lock } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useState, useEffect } from "react";
 import { getCurrentUser, isAdmin } from "../utils/authUtils";
 
 export default function Sidebar({ isOpen, onClose }) {
   const [userIsAdmin, setUserIsAdmin] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [selectedRole, setSelectedRole] = useState(() => {
+    const user = getCurrentUser();
+    if (!user) return null;
+    return localStorage.getItem(`selectedRole_${user.uid}`);
+  });
 
   useEffect(() => {
     const checkAdminStatus = async () => {
       const user = getCurrentUser();
       if (user) {
+        const roleKey = `selectedRole_${user.uid}`;
+        const role = localStorage.getItem(roleKey);
+        setSelectedRole(role);
         const adminStatus = await isAdmin(user.uid);
         setUserIsAdmin(adminStatus);
+      } else {
+        setSelectedRole(null);
       }
-      setLoading(false);
     };
 
-    if (isOpen) {
-      checkAdminStatus();
-    }
-  }, [isOpen]);
+    checkAdminStatus();
+  }, []);
+
+  useEffect(() => {
+    const syncRole = () => {
+      const user = getCurrentUser();
+      if (!user) return;
+      const roleKey = `selectedRole_${user.uid}`;
+      setSelectedRole(localStorage.getItem(roleKey));
+    };
+    window.addEventListener("storage", syncRole);
+    return () => window.removeEventListener("storage", syncRole);
+  }, []);
 
   const baseNavItems = [
     { id: "school-dashboard", icon: BookOpen, label: "Dashboard", href: "/school-dashboard", color: "text-green-600 dark:text-green-400" },
@@ -30,7 +47,15 @@ export default function Sidebar({ isOpen, onClose }) {
 
   const adminNavItem = { id: "admin-settings", icon: Settings, label: "Admin Settings", href: "/admin-config", color: "text-orange-600 dark:text-orange-400" };
 
-  const navItems = userIsAdmin ? [...baseNavItems, adminNavItem] : baseNavItems;
+  const roleAllowsItem = (role, itemId) => {
+    if (role === "class_teacher") return itemId === "classes";
+    if (role === "subject_teacher") return itemId === "records";
+    return true;
+  };
+
+  const canSeeAdminSettings =
+    selectedRole === "admin" || userIsAdmin;
+  const navItems = canSeeAdminSettings ? [...baseNavItems, adminNavItem] : baseNavItems;
 
   return (
     <>
@@ -64,6 +89,26 @@ export default function Sidebar({ isOpen, onClose }) {
         <nav className="flex-1 p-4 space-y-2">
           {navItems.map((item) => {
             const IconComponent = item.icon;
+            const isEnabled = roleAllowsItem(selectedRole, item.id);
+
+            if (!isEnabled) {
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  disabled
+                  className="w-full flex items-center justify-between gap-3 px-4 py-3 rounded-lg text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-800/60 cursor-not-allowed"
+                  title="Locked for your role"
+                >
+                  <div className="flex items-center gap-3">
+                    <IconComponent className={`w-5 h-5 ${item.color} opacity-40`} />
+                    <span className="font-medium text-sm">{item.label}</span>
+                  </div>
+                  <Lock className="w-4 h-4" />
+                </button>
+              );
+            }
+
             return (
               <Link
                 key={item.id}

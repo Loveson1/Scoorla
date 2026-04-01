@@ -82,6 +82,8 @@ export default function ResultPreview() {
     };
     return termMap[termId] || termId;
   };
+  const shouldShowLastTerm = (termId) =>
+    termId !== "term1" && termId !== "1st";
 
   useEffect(() => {
     const loadResults = async () => {
@@ -220,7 +222,7 @@ export default function ResultPreview() {
         { header: "T1+T2", width: 22 },
         { header: "Exam", width: 22 },
         { header: "Total", width: 22 },
-        { header: "LTC", width: 22 },
+        ...(shouldShowLastTerm(resultSelection.term) ? [{ header: "LTC", width: 22 }] : []),
         { header: "CA", width: 22 },
         { header: "Pos", width: 22 },
         { header: "Grade", width: 22 },
@@ -269,7 +271,7 @@ export default function ResultPreview() {
           result.testSum.toString(),
           result.exam.toString(),
           result.total.toString(),
-          result.lastTermCum.toString(),
+          ...(shouldShowLastTerm(resultSelection.term) ? [result.lastTermCum.toString()] : []),
           result.classAverage.toString(),
           result.position.toString(),
           result.grade,
@@ -392,7 +394,7 @@ export default function ResultPreview() {
                 <th className="border border-gray-400 dark:border-gray-600 px-3 py-2 text-center font-bold">
                   Total
                 </th>
-                {resultSelection.term !== "term1" && (
+                {shouldShowLastTerm(resultSelection.term) && (
                   <th className="border border-gray-400 dark:border-gray-600 px-3 py-2 text-center font-bold">
                     LTC
                   </th>
@@ -432,7 +434,7 @@ export default function ResultPreview() {
                   <td className="border border-gray-400 dark:border-gray-600 px-3 py-2 text-center font-bold text-black dark:text-white bg-blue-50 dark:bg-gray-600">
                     {result.total}
                   </td>
-                  {resultSelection.term !== "term1" && (
+                  {shouldShowLastTerm(resultSelection.term) && (
                     <td className="border border-gray-400 dark:border-gray-600 px-3 py-2 text-center text-black dark:text-white">
                       {result.lastTermCum ?? "-"}
                     </td>

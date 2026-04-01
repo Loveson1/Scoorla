@@ -16,7 +16,7 @@
  */
 
 import { db } from "../firebase";
-import { ref, set, get, update, remove, push, query, orderByChild, equalTo, onValue, off } from "firebase/database";
+import { ref, set, get, update, remove, push, onValue } from "firebase/database";
 
 // ============ SCHOOL PROFILE OPERATIONS ============
 
@@ -536,10 +536,11 @@ export const setClassTeacherCodeHash = async (schoolId, classId, codeHash) => {
 };
 
 /**
- * Set/update subject teacher code hash using classId + subjectId path key.
- * Path: schools/{schoolId}/accessCodes/subjectTeacherCodes/{classId}/{subjectId}
+ * Set/update subject teacher code hash using subject scope + subjectId path key.
+ * For junior classes, scope is normalized to "jss"; for senior classes, "sss".
+ * Path: schools/{schoolId}/accessCodes/subjectTeacherCodes/{scope}/{subjectId}
  * @param {string} schoolId
- * @param {string} classId
+ * @param {string} classId - Class ID or scope key ("jss"/"sss")
  * @param {string} subjectId
  * @param {string} codeHash
  * @returns {Promise<void>}
@@ -551,9 +552,12 @@ export const setSubjectTeacherCodeHash = async (
   codeHash
 ) => {
   try {
+    const scopeKey = String(classId || "").toLowerCase();
+    const normalizedScope =
+      /^jss/.test(scopeKey) ? "jss" : /^sss|^ss/.test(scopeKey) ? "sss" : classId;
     const codeRef = ref(
       db,
-      `schools/${schoolId}/accessCodes/subjectTeacherCodes/${classId}/${subjectId}`
+      `schools/${schoolId}/accessCodes/subjectTeacherCodes/${normalizedScope}/${subjectId}`
     );
     await set(codeRef, {
       hash: codeHash,
@@ -594,12 +598,31 @@ export const getClassTeacherCode = async (schoolId, classId) => {
  */
 export const getSubjectTeacherCode = async (schoolId, classId, subjectId) => {
   try {
-    const codeRef = ref(
+    const requestedClassId = String(classId || "");
+    const requestedClassKey = requestedClassId.toLowerCase();
+    const fallbackScope =
+      /^jss/.test(requestedClassKey)
+        ? "jss"
+        : /^sss|^ss/.test(requestedClassKey)
+          ? "sss"
+          : null;
+    if (fallbackScope && fallbackScope !== requestedClassId) {
+      const fallbackCodeRef = ref(
+        db,
+        `schools/${schoolId}/accessCodes/subjectTeacherCodes/${fallbackScope}/${subjectId}`
+      );
+      const fallbackSnapshot = await get(fallbackCodeRef);
+      if (fallbackSnapshot.exists()) {
+        return fallbackSnapshot.val();
+      }
+    }
+
+    const directCodeRef = ref(
       db,
-      `schools/${schoolId}/accessCodes/subjectTeacherCodes/${classId}/${subjectId}`
+      `schools/${schoolId}/accessCodes/subjectTeacherCodes/${requestedClassId}/${subjectId}`
     );
-    const snapshot = await get(codeRef);
-    return snapshot.exists() ? snapshot.val() : null;
+    const directSnapshot = await get(directCodeRef);
+    return directSnapshot.exists() ? directSnapshot.val() : null;
   } catch (error) {
     console.error("Error fetching subject teacher code:", error);
     return null;

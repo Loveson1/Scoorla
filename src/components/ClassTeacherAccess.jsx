@@ -7,6 +7,8 @@ import {
   getSchoolData,
   saveClassSelection,
   getCustomClasses,
+  getSession,
+  getCurrentTerm,
 } from "./utils/school-data";
 import TeacherPasswordModal from "./TeacherPasswordModal";
 
@@ -25,6 +27,14 @@ export default function ClassTeacherAccess() {
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  const formatClassDisplay = (classId) => {
+    const raw = String(classId || "").trim();
+    if (!raw) return raw;
+    const matched = raw.match(/^([a-zA-Z]+)\s*(\d+)$/);
+    if (matched) return `${matched[1].toUpperCase()} ${matched[2]}`;
+    return raw.toUpperCase();
+  };
 
   const normalizeClasses = (source) => {
     if (!source) return [];
@@ -93,12 +103,17 @@ export default function ClassTeacherAccess() {
     setShowPasswordModal(true);
   };
 
-  const handlePasswordVerified = async (verificationResult) => {
+  const handlePasswordVerified = async () => {
     try {
       // Save class selection for this teacher session
       if (user && schoolId && selectedClass) {
+        const currentTerm = getCurrentTerm(schoolId) || "term1";
+        const currentSession = getSession();
         saveClassSelection({
           schoolId,
+          class: selectedClass,
+          term: currentTerm,
+          session: currentSession,
           classId: selectedClass,
           teacherType: "class",
           accessedAt: new Date().toISOString(),
@@ -168,7 +183,7 @@ export default function ClassTeacherAccess() {
                 <div className="flex items-center justify-between">
                   <div>
                     <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-1">
-                      {classId}
+                      {formatClassDisplay(classId)}
                     </h3>
                     <p className="text-sm text-gray-600 dark:text-gray-400">
                       Click to access this class
@@ -213,7 +228,7 @@ export default function ClassTeacherAccess() {
           accessType="class"
           schoolId={schoolId}
           classId={selectedClass}
-          itemName={selectedClass}
+          itemName={formatClassDisplay(selectedClass)}
         />
       )}
     </div>

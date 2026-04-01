@@ -8,6 +8,8 @@ import {
   getSubjectsByClass,
   saveResultSelection,
   getCustomClasses,
+  getSession,
+  getCurrentTerm,
 } from "./utils/school-data";
 import TeacherPasswordModal from "./TeacherPasswordModal";
 
@@ -29,6 +31,14 @@ export default function SubjectTeacherAccess() {
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  const formatClassDisplay = (classId) => {
+    const raw = String(classId || "").trim();
+    if (!raw) return raw;
+    const matched = raw.match(/^([a-zA-Z]+)\s*(\d+)$/);
+    if (matched) return `${matched[1].toUpperCase()} ${matched[2]}`;
+    return raw.toUpperCase();
+  };
 
   const normalizeClasses = (source) => {
     if (!source) return [];
@@ -117,12 +127,18 @@ export default function SubjectTeacherAccess() {
     setShowPasswordModal(true);
   };
 
-  const handlePasswordVerified = async (verificationResult) => {
+  const handlePasswordVerified = async () => {
     try {
       // Save subject selection for this teacher session
       if (user && schoolId && selectedClass && selectedSubject) {
+        const currentTerm = getCurrentTerm(schoolId) || "term1";
+        const currentSession = getSession();
         saveResultSelection({
           schoolId,
+          class: selectedClass,
+          subject: selectedSubject,
+          term: currentTerm,
+          session: currentSession,
           classId: selectedClass,
           subjectId: selectedSubject,
           teacherType: "subject",
@@ -206,7 +222,7 @@ export default function SubjectTeacherAccess() {
                     <div className="flex items-center justify-between">
                       <div>
                         <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-1">
-                          {classId}
+                          {formatClassDisplay(classId)}
                         </h3>
                         <p className="text-sm text-gray-600 dark:text-gray-400">
                           Click to select this class

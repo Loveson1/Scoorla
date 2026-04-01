@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { jsPDF } from "jspdf";
 import {
@@ -36,6 +36,7 @@ export default function ClassDashboard() {
   const [editingStudent, setEditingStudent] = useState(null);
   const [isResultPreviewOpen, setIsResultPreviewOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState(null);
+  const [selectedRole, setSelectedRole] = useState(null);
 
   // Load user data on mount
   useEffect(() => {
@@ -43,6 +44,7 @@ export default function ClassDashboard() {
       const currentUser = getCurrentUser();
       if (currentUser) {
         setUserId(currentUser.uid);
+        setSelectedRole(localStorage.getItem(`selectedRole_${currentUser.uid}`));
         setClassSelection(getClassSelection(currentUser.uid));
         
         // Get schoolId from Firestore FIRST
@@ -291,6 +293,7 @@ export default function ClassDashboard() {
       yPosition += 6;
 
       // Table headers
+      const isFirstTerm = classSelection.term === "term1" || classSelection.term === "1st";
       const headers = [
         { header: "Subject", width: 30 },
         { header: "T1", width: 10 },
@@ -298,7 +301,7 @@ export default function ClassDashboard() {
         { header: "T1+T2", width: 12 },
         { header: "Exam", width: 10 },
         { header: "Total", width: 12 },
-        { header: "L.T.Cum", width: 12 },
+        ...(isFirstTerm ? [] : [{ header: "L.T.Cum", width: 12 }]),
         { header: "C.Avg", width: 10 },
         { header: "Pos", width: 8 },
         { header: "Grade", width: 10 },
@@ -340,7 +343,7 @@ export default function ClassDashboard() {
           result.testSum.toString(),
           result.exam.toString(),
           result.total.toString(),
-          result.lastTermCumulative.toString(),
+          ...(isFirstTerm ? [] : [result.lastTermCumulative.toString()]),
           result.classAverage.toString(),
           result.position.toString(),
           result.grade,
@@ -361,7 +364,7 @@ export default function ClassDashboard() {
       pdf.setFontSize(9);
       pdf.setFont(undefined, "italic");
       pdf.text(
-        `Next term begins: ${formatDate(adminSettings.nextTermBegins)}`,
+        `Next term begins: ${formatDate(adminSettings?.nextTermBegins)}`,
         margin,
         yPosition,
       );
@@ -386,7 +389,9 @@ export default function ClassDashboard() {
   };
 
   const formatDate = (dateString) => {
+    if (!dateString) return "Not set";
     const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) return "Not set";
     const options = { year: "numeric", month: "long", day: "numeric" };
     return date.toLocaleDateString("en-US", options);
   };
@@ -553,20 +558,37 @@ export default function ClassDashboard() {
                 Add Student
               </button>
 
-               <button
-          onClick={() => navigate("/school-dashboard")}
-          className="px-2 py-2 md:hidden rounded-lg border-2 border-gray-300 dark:border-gray-600 text-black dark:text-white font-semibold hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-300" >
-          Back to Dashboard
-        </button>
+              {selectedRole === "class_teacher" && (
+                <button
+                  onClick={() => navigate("/class-teacher-access")}
+                  className="px-2 py-2 md:hidden rounded-lg border-2 border-blue-300 dark:border-blue-600 text-blue-700 dark:text-blue-300 font-semibold hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-all duration-300"
+                >
+                  Change Class
+                </button>
+              )}
+              <button
+                onClick={() => navigate("/school-dashboard")}
+                className="px-2 py-2 md:hidden rounded-lg border-2 border-gray-300 dark:border-gray-600 text-black dark:text-white font-semibold hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-300" >
+                Back to Dashboard
+              </button>
             </div>
           </div>
         </div>
         <div className="flex-col justify-self-end">
-       <button
-          onClick={() => navigate("/school-dashboard")}
-          className="px-6 py-2 max-md:hidden  rounded-lg border-2 border-gray-300 dark:border-gray-600 text-black dark:text-white font-semibold hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-300" >
-          Back to Dashboard
-        </button></div>
+          {selectedRole === "class_teacher" && (
+            <button
+              onClick={() => navigate("/class-teacher-access")}
+              className="px-6 py-2 mb-2 max-md:hidden rounded-lg border-2 border-blue-300 dark:border-blue-600 text-blue-700 dark:text-blue-300 font-semibold hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-all duration-300"
+            >
+              Change Class
+            </button>
+          )}
+          <button
+            onClick={() => navigate("/school-dashboard")}
+            className="px-6 py-2 max-md:hidden  rounded-lg border-2 border-gray-300 dark:border-gray-600 text-black dark:text-white font-semibold hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-300" >
+            Back to Dashboard
+          </button>
+        </div>
       </div>
 
       

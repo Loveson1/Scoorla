@@ -26,10 +26,35 @@ import {
 import {
   getAllClassTeacherCodes,
   getAllSubjectTeacherCodes,
+  getSubjectTeacherCode,
   setClassTeacherCodeHash,
   setSubjectTeacherCodeHash,
 } from "../utils/firebaseDatabase";
 import { getCurrentUser, getUserSchoolId } from "../utils/authUtils";
+
+const getLevelFromClassId = (classId) => {
+  const normalized = String(classId || "").toLowerCase();
+  if (/^jss/.test(normalized)) return "junior";
+  if (/^sss|^ss/.test(normalized)) return "senior";
+  return null;
+};
+
+const getSubjectScopeKey = (classId) => {
+  const level = getLevelFromClassId(classId);
+  if (level === "junior") return "jss";
+  if (level === "senior") return "sss";
+  return classId;
+};
+
+const formatClassDisplay = (classId) => {
+  const raw = String(classId || "").trim();
+  if (!raw) return raw;
+  const matched = raw.match(/^([a-zA-Z]+)\s*(\d+)$/);
+  if (matched) {
+    return `${matched[1].toUpperCase()} ${matched[2]}`;
+  }
+  return raw.toUpperCase();
+};
 
 export default function AdminConfig() {
   const navigate = useNavigate();
@@ -56,6 +81,11 @@ export default function AdminConfig() {
   const [subjectCodeExists, setSubjectCodeExists] = useState({});
   const [classCodeUpdatedAt, setClassCodeUpdatedAt] = useState({});
   const [subjectCodeUpdatedAt, setSubjectCodeUpdatedAt] = useState({});
+
+  const getClassesForLevel = (targetLevel) =>
+    (classes || [])
+      .map((item) => item.id || item)
+      .filter((id) => getLevelFromClassId(id) === targetLevel);
 
   // Get school ID from user data
   useEffect(() => {
@@ -111,12 +141,23 @@ export default function AdminConfig() {
         const subjectCodes = await getAllSubjectTeacherCodes(schoolId);
         const subjectExists = {};
         const subjectUpdatedAt = {};
-        Object.entries(subjectCodes || {}).forEach(([classId, subjectsByClass]) => {
+        Object.entries(subjectCodes || {}).forEach(([scopeKey, subjectsByClass]) => {
           Object.entries(subjectsByClass || {}).forEach(([subjectId, value]) => {
             if (value?.hash) {
-              const key = `${classId}_${subjectId}`;
-              subjectExists[key] = true;
-              subjectUpdatedAt[key] = value.updatedAt || null;
+              if (scopeKey === "jss" || scopeKey === "sss") {
+                const matchingClasses = (classes || [])
+                  .map((item) => item.id || item)
+                  .filter((id) => getSubjectScopeKey(id) === scopeKey);
+                matchingClasses.forEach((classId) => {
+                  const key = `${classId}_${subjectId}`;
+                  subjectExists[key] = true;
+                  subjectUpdatedAt[key] = value.updatedAt || null;
+                });
+              } else {
+                const key = `${scopeKey}_${subjectId}`;
+                subjectExists[key] = true;
+                subjectUpdatedAt[key] = value.updatedAt || null;
+              }
             }
           });
         });
@@ -131,7 +172,7 @@ export default function AdminConfig() {
     };
 
     loadPasswords();
-  }, [schoolId]);
+  }, [schoolId, classes]);
 
   const handleSessionChange = (newSession) => {
     setSession(newSession);
@@ -186,23 +227,37 @@ export default function AdminConfig() {
       const classHash = await hashPassword(classPassword);
       await setClassTeacherCodeHash(schoolId, classId, classHash);
 
-      // Auto-generate subject teacher passwords for this class's current subjects
-      const isJuniorClass = /^jss/i.test(classId);
-      const relevantSubjects = isJuniorClass
-        ? subjects?.junior || []
-        : subjects?.senior || [];
+      // Ensure level-shared subject passwords exist (one per subject for JSS, one per subject for SSS)
+      const level = getLevelFromClassId(classId);
+      const relevantSubjects =
+        level === "junior"
+          ? subjects?.junior || []
+          : level === "senior"
+            ? subjects?.senior || []
+            : [];
       const generatedSubjectPasswords = {};
 
       for (const subjectName of relevantSubjects) {
-        const subjectPassword = generateSixDigitCode();
-        const subjectHash = await hashPassword(subjectPassword);
-        await setSubjectTeacherCodeHash(
+        const existingCode = await getSubjectTeacherCode(
           schoolId,
           classId,
-          subjectName,
-          subjectHash
+          subjectName
         );
-        generatedSubjectPasswords[`${classId}_${subjectName}`] = subjectPassword;
+        if (existingCode?.hash) {
+          continue;
+        }
+
+        const subjectPassword = generateSixDigitCode();
+        const subjectHash = await hashPassword(subjectPassword);
+        const scopeKey = getSubjectScopeKey(classId);
+        await setSubjectTeacherCodeHash(schoolId, scopeKey, subjectName, subjectHash);
+
+        const levelClassIds = (updated || [])
+          .map((item) => item.id || item)
+          .filter((id) => getLevelFromClassId(id) === level);
+        levelClassIds.forEach((levelClassId) => {
+          generatedSubjectPasswords[`${levelClassId}_${subjectName}`] = subjectPassword;
+        });
       }
 
       // Update local state
@@ -239,7 +294,7 @@ export default function AdminConfig() {
   };
 
   const handleRemoveClass = (classId) => {
-    if (window.confirm(`Remove class ${classId}?`)) {
+    if (window.confirm(`Remove class ${formatClassDisplay(classId)}?`)) {
       removeClass(schoolId, classId);
       const updated = getCustomClasses(schoolId);
       setClasses(updated);
@@ -263,21 +318,16 @@ export default function AdminConfig() {
       setSubjects(updated);
       const nowIso = new Date().toISOString();
 
-      // Auto-generate subject teacher password hashes for each matching class
-      const classIds = classes
-        .map((c) => c.id || c)
-        .filter((classId) =>
-          selectedLevel === "junior" ? /^jss/i.test(classId) : /^sss/i.test(classId)
-        );
-
+      // Generate one level-shared subject password (JSS1-3 share, SSS1-3 share)
+      const classIds = getClassesForLevel(selectedLevel);
       const generatedSubjectPasswords = {};
-      for (const classId of classIds) {
-        const password = generateSixDigitCode();
-        const subjectId = `${classId}_${newSubject}`;
-        const codeHash = await hashPassword(password);
-        await setSubjectTeacherCodeHash(schoolId, classId, newSubject, codeHash);
-        generatedSubjectPasswords[subjectId] = password;
-      }
+      const password = generateSixDigitCode();
+      const codeHash = await hashPassword(password);
+      const scopeKey = selectedLevel === "junior" ? "jss" : "sss";
+      await setSubjectTeacherCodeHash(schoolId, scopeKey, newSubject, codeHash);
+      classIds.forEach((classId) => {
+        generatedSubjectPasswords[`${classId}_${newSubject}`] = password;
+      });
       setSubjectPasswords((prev) => ({ ...prev, ...generatedSubjectPasswords }));
       setSubjectCodeExists((prev) => {
         const next = { ...prev };
@@ -357,7 +407,7 @@ export default function AdminConfig() {
       }));
       setClassCodeExists((prev) => ({ ...prev, [classId]: true }));
       setClassCodeUpdatedAt((prev) => ({ ...prev, [classId]: nowIso }));
-      alert(`New password for ${classId}: ${newPassword}`);
+      alert(`New password for ${formatClassDisplay(classId)}: ${newPassword}`);
     } catch (err) {
       console.error("Error generating class password:", err);
       alert("Error generating password. Please try again.");
@@ -371,19 +421,38 @@ export default function AdminConfig() {
     }
 
     try {
-      const subjectId = `${classId}_${subject}`;
       const newPassword = generateSixDigitCode();
       const codeHash = await hashPassword(newPassword);
       const nowIso = new Date().toISOString();
-      await setSubjectTeacherCodeHash(schoolId, classId, subject, codeHash);
+      const level = getLevelFromClassId(classId);
+      const scopeKey = getSubjectScopeKey(classId);
+      await setSubjectTeacherCodeHash(schoolId, scopeKey, subject, codeHash);
 
-      setSubjectPasswords((prev) => ({
-        ...prev,
-        [subjectId]: newPassword,
-      }));
-      setSubjectCodeExists((prev) => ({ ...prev, [subjectId]: true }));
-      setSubjectCodeUpdatedAt((prev) => ({ ...prev, [subjectId]: nowIso }));
-      alert(`New password for ${subject} (${classId}): ${newPassword}`);
+      const affectedClassIds =
+        level === "junior" || level === "senior"
+          ? getClassesForLevel(level)
+          : [classId];
+      const updates = {};
+      affectedClassIds.forEach((affectedClassId) => {
+        updates[`${affectedClassId}_${subject}`] = newPassword;
+      });
+
+      setSubjectPasswords((prev) => ({ ...prev, ...updates }));
+      setSubjectCodeExists((prev) => {
+        const next = { ...prev };
+        Object.keys(updates).forEach((subjectId) => {
+          next[subjectId] = true;
+        });
+        return next;
+      });
+      setSubjectCodeUpdatedAt((prev) => {
+        const next = { ...prev };
+        Object.keys(updates).forEach((subjectId) => {
+          next[subjectId] = nowIso;
+        });
+        return next;
+      });
+      alert(`New level-shared password for ${subject} (${scopeKey.toUpperCase()}): ${newPassword}`);
     } catch (err) {
       console.error("Error generating subject password:", err);
       alert("Error generating password. Please try again.");
@@ -397,13 +466,14 @@ export default function AdminConfig() {
   };
 
   const handleResetPassword = (classId) => {
-    if (window.confirm(`Reset password for class ${classId}?`)) {
+    if (window.confirm(`Reset password for class ${formatClassDisplay(classId)}?`)) {
       handleGenerateClassPassword(classId);
     }
   };
 
   const handleResetSubjectPassword = (classId, subject) => {
-    if (window.confirm(`Reset password for ${subject} in ${classId}?`)) {
+    const scopeKey = getSubjectScopeKey(classId).toUpperCase();
+    if (window.confirm(`Reset ${subject} password for all ${scopeKey} classes?`)) {
       handleGenerateSubjectPassword(classId, subject);
     }
   };
@@ -816,13 +886,15 @@ export default function AdminConfig() {
                             className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-750 border border-gray-200 dark:border-gray-700 rounded-lg"
                           >
                             <div>
-                              <p className="font-semibold text-black dark:text-white">{classId}</p>
+                              <p className="font-semibold text-black dark:text-black">
+                                {formatClassDisplay(classId)}
+                              </p>
                               {password ? (
                                 <div className="flex items-center gap-2">
                                   <p className="text-sm text-gray-600 dark:text-gray-400 font-mono">
                                     {maskPassword(password)}
                                   </p>
-                                  <span className="rounded bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-900/30 dark:text-green-300">
+                                  <span className="rounded bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-900 dark:text-green-300">
                                     Copy now
                                   </span>
                                 </div>
@@ -878,36 +950,51 @@ export default function AdminConfig() {
                     Subject Teacher Passwords
                   </h4>
                   <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-                    Subject teachers use these passwords to unlock access to their specific subjects.
+                    Subject teachers use one shared password per subject by level (all JSS classes share one, all SSS classes share one).
                   </p>
 
                   {classes && classes.length > 0 ? (
                     <div className="space-y-6">
-                      {classes.map((classItem) => {
-                        const classId = classItem.id || classItem;
-                        const classSubjects = /^jss/i.test(classId)
-                          ? subjects?.junior || []
-                          : subjects?.senior || [];
-                        if (classSubjects.length === 0) return null;
+                      {[
+                        {
+                          scopeKey: "jss",
+                          title: "JSS Subjects (shared for JSS1-3)",
+                          classIds: getClassesForLevel("junior"),
+                          subjectsList: subjects?.junior || [],
+                        },
+                        {
+                          scopeKey: "sss",
+                          title: "SSS Subjects (shared for SSS1-3)",
+                          classIds: getClassesForLevel("senior"),
+                          subjectsList: subjects?.senior || [],
+                        },
+                      ].map((group) => {
+                        if (!group.subjectsList.length) return null;
+                        const scopeClassId = group.classIds[0] || group.scopeKey;
 
                         return (
-                          <div key={`subjects-${classId}`}>
+                          <div key={`subjects-${group.scopeKey}`}>
                             <h5 className="font-semibold text-black dark:text-white mb-3">
-                              {classId}
+                              {group.title}
                             </h5>
-                            <div className="space-y-2 ml-4">
-                              {classSubjects.map((subject) => {
-                                const subjectId = `${classId}_${subject}`;
-                                const password = subjectPasswords[subjectId];
-                                const updatedAt = subjectCodeUpdatedAt[subjectId];
+                            <div className="space-y-2 ">
+                              {group.subjectsList.map((subject) => {
+                                const existingKey =
+                                  group.classIds
+                                    .map((id) => `${id}_${subject}`)
+                                    .find(
+                                      (id) => subjectCodeExists[id] || subjectPasswords[id]
+                                    ) || `${scopeClassId}_${subject}`;
+                                const password = subjectPasswords[existingKey];
+                                const updatedAt = subjectCodeUpdatedAt[existingKey];
 
                                 return (
                                   <div
-                                    key={subjectId}
+                                    key={`${group.scopeKey}_${subject}`}
                                     className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-750 border border-gray-200 dark:border-gray-700 rounded-lg"
                                   >
                                     <div>
-                                      <p className="font-semibold text-black dark:text-white text-sm">
+                                      <p className="font-semibold text-black dark:text-black text-sm">
                                         {subject}
                                       </p>
                                       {password ? (
@@ -915,11 +1002,11 @@ export default function AdminConfig() {
                                           <p className="text-xs text-gray-600 dark:text-gray-400 font-mono">
                                             {maskPassword(password)}
                                           </p>
-                                          <span className="rounded bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-900/30 dark:text-green-300">
+                                          <span className="rounded bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-900 dark:text-green-300">
                                             Copy now
                                           </span>
                                         </div>
-                                      ) : subjectCodeExists[subjectId] ? (
+                                      ) : subjectCodeExists[existingKey] ? (
                                         <p className="text-xs text-gray-500 dark:text-gray-500 italic">
                                           Password is set (hash stored only)
                                         </p>
@@ -928,7 +1015,7 @@ export default function AdminConfig() {
                                           No password generated yet
                                         </p>
                                       )}
-                                      {(subjectCodeExists[subjectId] || password) && (
+                                      {(subjectCodeExists[existingKey] || password) && (
                                         <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
                                           Updated: {formatUpdatedAt(updatedAt)}
                                         </p>
@@ -950,7 +1037,7 @@ export default function AdminConfig() {
                                       )}
                                       <button
                                         onClick={() =>
-                                          handleResetSubjectPassword(classId, subject)
+                                          handleResetSubjectPassword(scopeClassId, subject)
                                         }
                                         className="p-2 hover:bg-blue-100 dark:hover:bg-blue-900/30 rounded-lg transition-colors"
                                         title="Reset password"
@@ -974,7 +1061,7 @@ export default function AdminConfig() {
                 {/* Help Text */}
                 <div className="mt-8 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
                   <p className="text-sm text-blue-900 dark:text-blue-200">
-                    <strong>How it works:</strong> Passwords are automatically generated as 6-digit codes. Only SHA-256 hashes are stored in Realtime Database. Click copy when a fresh code is generated, and use refresh to regenerate (old code becomes invalid).
+                    <strong>How it works:</strong> Passwords are automatically generated as 6-digit codes. Subject passwords are shared by level (JSS1-3 together, SSS1-3 together). Only SHA-256 hashes are stored in Realtime Database. Click copy when a fresh code is generated, and use refresh to regenerate (old code becomes invalid).
                   </p>
                 </div>
               </>

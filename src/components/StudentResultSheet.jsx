@@ -12,6 +12,7 @@ import {
   getRemarkByGrade,
   getAdminSettings,
   getGradingScale,
+  getLastTermCumulative,
   getClassAverage,
   getStudentPosition,
   roundScore,
@@ -23,7 +24,7 @@ export default function StudentResultSheet() {
   const [classData, setClassData] = useState(null);
   const [studentResults, setStudentResults] = useState([]);
   const [schoolData, setSchoolData] = useState({});
-  const [adminSettings, setAdminSettings] = useState(getAdminSettings());
+  const [adminSettings, setAdminSettings] = useState(null);
   const [resolvedSchoolId, setResolvedSchoolId] = useState(null);
 
   // Load school data on component mount
@@ -38,6 +39,8 @@ export default function StudentResultSheet() {
             setResolvedSchoolId(userData.schoolId);
             const data = await getSchoolData(userData.schoolId);
             setSchoolData(data || {});
+            const settings = await getAdminSettings(userData.schoolId);
+            setAdminSettings(settings || null);
           }
         }
       } catch (error) {
@@ -163,7 +166,9 @@ export default function StudentResultSheet() {
   };
 
   const formatDate = (dateString) => {
+    if (!dateString) return "Not set";
     const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) return "Not set";
     const options = { year: "numeric", month: "long", day: "numeric" };
     return date.toLocaleDateString("en-US", options);
   };
@@ -196,7 +201,7 @@ export default function StudentResultSheet() {
             logoSize,
             logoSize
           );
-        } catch (e) {
+        } catch {
           // Logo conversion failed, continue without it
         }
       }
@@ -243,7 +248,7 @@ export default function StudentResultSheet() {
       pdf.text(`Reg No: ${student.regNumber || "N/A"}`, col2, yPosition);
       yPosition += 5;
 
-      pdf.text(`Sex: ${student.sex || "N/A"}`, col1, yPosition);
+      pdf.text(`Sex: ${student.sex || student.gender || "N/A"}`, col1, yPosition);
       pdf.text(`Class: ${getClassLabel(classInfo.class)}`, col2, yPosition);
       yPosition += 5;
 
@@ -261,6 +266,7 @@ export default function StudentResultSheet() {
       yPosition += 6;
 
       // Table headers
+      const isFirstTerm = classInfo.term === "term1" || classInfo.term === "1st";
       const headers = [
         { header: "Subject", width: 30 },
         { header: "T1", width: 10 },
@@ -268,7 +274,7 @@ export default function StudentResultSheet() {
         { header: "T1+T2", width: 12 },
         { header: "Exam", width: 10 },
         { header: "Total", width: 12 },
-        { header: "L.T.Cum", width: 12 },
+        ...(isFirstTerm ? [] : [{ header: "L.T.Cum", width: 12 }]),
         { header: "C.Avg", width: 10 },
         { header: "Pos", width: 8 },
         { header: "Grade", width: 10 },
@@ -310,7 +316,7 @@ export default function StudentResultSheet() {
           result.testSum.toString(),
           result.exam.toString(),
           result.total.toString(),
-          result.lastTermCumulative.toString(),
+          ...(isFirstTerm ? [] : [result.lastTermCumulative.toString()]),
           result.classAverage.toString(),
           result.position.toString(),
           result.grade,
@@ -331,7 +337,7 @@ export default function StudentResultSheet() {
       pdf.setFontSize(9);
       pdf.setFont(undefined, "italic");
       pdf.text(
-        `Next term begins: ${formatDate(adminSettings.nextTermBegins)}`,
+        `Next term begins: ${formatDate(adminSettings?.nextTermBegins)}`,
         margin,
         yPosition
       );
@@ -447,7 +453,7 @@ export default function StudentResultSheet() {
             Sex
           </p>
           <p className="text-lg font-bold text-black dark:text-white">
-            {studentData.sex || "N/A"}
+            {studentData.sex || studentData.gender || "N/A"}
           </p>
         </div>
         <div>
@@ -483,9 +489,11 @@ export default function StudentResultSheet() {
               <th className="border border-gray-300 dark:border-gray-600 px-3 py-2 text-center font-bold">
                 Total
               </th>
-              <th className="border border-gray-300 dark:border-gray-600 px-3 py-2 text-center font-bold">
-                Last Term Cum.
-              </th>
+              {(classData.term === "term2" || classData.term === "term3" || classData.term === "2nd" || classData.term === "3rd") && (
+                <th className="border border-gray-300 dark:border-gray-600 px-3 py-2 text-center font-bold">
+                  Last Term Cum.
+                </th>
+              )}
               <th className="border border-gray-300 dark:border-gray-600 px-3 py-2 text-center font-bold">
                 Class Avg.
               </th>
@@ -524,9 +532,11 @@ export default function StudentResultSheet() {
                 <td className="border border-gray-300 dark:border-gray-600 px-3 py-2 text-center font-bold text-black dark:text-white bg-blue-50 dark:bg-gray-600">
                   {result.total}
                 </td>
-                <td className="border border-gray-300 dark:border-gray-600 px-3 py-2 text-center text-black dark:text-white">
-                  {result.lastTermCumulative}
-                </td>
+                {(classData.term === "term2" || classData.term === "term3" || classData.term === "2nd" || classData.term === "3rd") && (
+                  <td className="border border-gray-300 dark:border-gray-600 px-3 py-2 text-center text-black dark:text-white">
+                    {result.lastTermCumulative}
+                  </td>
+                )}
                 <td className="border border-gray-300 dark:border-gray-600 px-3 py-2 text-center text-black dark:text-white">
                   {result.classAverage}
                 </td>
@@ -549,11 +559,11 @@ export default function StudentResultSheet() {
       <div className="p-4 bg-blue-50 dark:bg-gray-700 rounded-lg mb-6 text-center">
         <p className="text-sm italic text-gray-700 dark:text-gray-300">
           Next term begins:{" "}
-          <span className="font-semibold">
-            {formatDate(adminSettings.nextTermBegins)}
-          </span>
-        </p>
-      </div>
+            <span className="font-semibold">
+              {formatDate(adminSettings?.nextTermBegins)}
+            </span>
+          </p>
+        </div>
     </div>
   );
 }

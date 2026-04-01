@@ -1,4 +1,4 @@
-import { setSchoolProfile, getSchoolProfile, addStudent, getStudentsByClass, setScore, getScoresBySubject, setSchoolSettings, getSchoolSettings, deleteStudent } from "../../utils/firebaseDatabase";
+import { setSchoolProfile, getSchoolProfile, addStudent, getStudentsByClass, setScore, getScoresBySubject, setSchoolSettings, getSchoolSettings, deleteStudent, updateStudent as updateStudentInDb } from "../../utils/firebaseDatabase";
 import { setSessionState, getSessionState, setUserData, getUserData } from "../../utils/userSession";
 import { auth } from "../../firebase";
 
@@ -173,7 +173,8 @@ export async function saveClassStudents(schoolId, classId, students, userId) {
           name: student.name,
           classId: classId,
           regNo: student.regNumber || '', // Map regNumber to regNo for Firebase
-          gender: student.gender || '',
+          gender: student.sex || student.gender || '',
+          sex: student.sex || student.gender || '',
           phone: student.phone || '',
         });
         // Track the mapping of old ID to Firebase ID
@@ -182,6 +183,16 @@ export async function saveClassStudents(schoolId, classId, students, userId) {
           id: firebaseId, // Replace Date.now() ID with Firebase ID
         });
       } else {
+        if (student?.id && student?.name) {
+          await updateStudentInDb(schoolId, student.id, {
+            name: student.name,
+            classId,
+            regNo: student.regNumber || student.regNo || "",
+            gender: student.sex || student.gender || "",
+            sex: student.sex || student.gender || "",
+            phone: student.phone || "",
+          });
+        }
         // Already in Firebase, keep as is
         newStudents.push(student);
       }
@@ -214,7 +225,11 @@ export async function getClassStudents(schoolId, classId) {
         id: firebaseKey,
         name: s.name,
         classId: s.classId,
-        regNo: s.regNo || '',
+        regNo: s.regNo || "",
+        regNumber: s.regNo || "",
+        gender: s.gender || s.sex || "",
+        sex: s.sex || s.gender || "",
+        phone: s.phone || "",
       }));
       setSessionState(`students_${schoolId}_${classId}`, JSON.stringify(studentArray));
       return studentArray;
