@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
   saveClassSelection,
@@ -7,8 +8,23 @@ import {
 import { useSessionContext } from "../context/SessionContext";
 import { useAuthContext } from "../context/AuthContext";
 
+const buildClassSelectionQueryKey = ({
+  userId,
+  sessionId,
+  sessionName,
+  termId,
+}) => [
+  "classDashboard",
+  "selection",
+  String(userId || "").trim() || "anonymous",
+  String(sessionId || "").trim() || "none",
+  String(sessionName || "").trim() || "none",
+  String(termId || "").trim() || "term1",
+];
+
 export default function ClassSelectionModal({ isOpen, onClose }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const {
     selectedSessionId,
     selectedSessionName,
@@ -16,7 +32,7 @@ export default function ClassSelectionModal({ isOpen, onClose }) {
     activeSessionId,
     activeTermId,
   } = useSessionContext();
-  const { isAdmin, canAccessClass, authUser, schoolId } = useAuthContext();
+  const { isAdmin, canManageClass, authUser, schoolId } = useAuthContext();
   const [classes, setClasses] = useState([]);
 
   useEffect(() => {
@@ -25,17 +41,17 @@ export default function ClassSelectionModal({ isOpen, onClose }) {
       const allClasses = customClasses || [];
       const filtered = isAdmin
         ? allClasses
-        : allClasses.filter((cls) => canAccessClass(cls?.id || cls));
+        : allClasses.filter((cls) => canManageClass(cls?.id || cls));
       setClasses(filtered);
     }
-  }, [isOpen, isAdmin, canAccessClass, schoolId]);
+  }, [isOpen, isAdmin, canManageClass, schoolId]);
 
   const handleGoToClass = (selectedClass) => {
     if (!authUser?.uid) {
       alert("User not found");
       return;
     }
-    if (!isAdmin && !canAccessClass(selectedClass)) {
+    if (!isAdmin && !canManageClass(selectedClass)) {
       alert("You are not assigned to this resource");
       return;
     }
@@ -55,6 +71,15 @@ export default function ClassSelectionModal({ isOpen, onClose }) {
 
     console.log("Saving class selection:", { classData, userId: authUser.uid });
     saveClassSelection(classData, authUser.uid);
+    queryClient.setQueryData(
+      buildClassSelectionQueryKey({
+        userId: authUser.uid,
+        sessionId: resolvedSessionId,
+        sessionName: resolvedSessionName,
+        termId: classData.term,
+      }),
+      classData
+    );
     navigate("/class-dashboard");
     onClose();
   };
@@ -73,7 +98,7 @@ export default function ClassSelectionModal({ isOpen, onClose }) {
             onClick={onClose}
             className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 text-2xl leading-none"
           >
-            ×
+            &times;
           </button>
         </div>
 
@@ -100,4 +125,6 @@ export default function ClassSelectionModal({ isOpen, onClose }) {
     </div>
   );
 }
+
+
 

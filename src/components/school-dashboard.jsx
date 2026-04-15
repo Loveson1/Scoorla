@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   canonicalizeResultSelection,
@@ -46,268 +47,492 @@ const buildRecordScopeSignature = (scopes = []) =>
     .sort()
     .join("|");
 
+const SCHOOL_DASHBOARD_ROUTE = "/school-dashboard";
+const SCHOOL_DASHBOARD_STALE_TIME = 5 * 60 * 1000;
+const EMPTY_SCHOOL_DATA = Object.freeze({});
+const EMPTY_DASHBOARD_STATS = Object.freeze({
+  schoolId: "",
+  sessionId: null,
+  totalEnrollments: 0,
+  totalStudents: 0,
+  totalClasses: 0,
+  totalTerms: 0,
+  totalScores: 0,
+  classBreakdown: {},
+  termBreakdown: {},
+});
+
+const fetchSchoolDashboardStats = async ({ queryKey }) => {
+  const [, schoolId, sessionId, userId] = queryKey;
+  if (!schoolId || schoolId === "none" || !userId || userId === "anonymous") {
+    return EMPTY_DASHBOARD_STATS;
+  }
+
+  const nextStats = await getSessionDashboardStats(
+    schoolId,
+    sessionId === "none" ? "" : sessionId
+  );
+
+  return {
+    ...EMPTY_DASHBOARD_STATS,
+    ...(nextStats || {}),
+  };
+};
+
 export default function SchoolDashboard() {
   const navigate = useNavigate();
   const location = useLocation();
-  const {
-    isAdmin,
-    authUser,
-    schoolId,
-    assignedClasses,
-    canAccessClass,
-    canAccessSubject,
-  } = useAuthContext();
-  const { schoolData, isLoading: isBootstrapLoading } = useSchoolBootstrap();
-  const {
-    selectedSessionId,
-    selectedSessionName,
-    selectedTermId,
-    activeSessionId,
-    activeTermId,
-    isHistoricalView,
-    isReadOnlyView,
-    isPastTermView,
-  } = useSessionContext();
+  const authContext = useAuthContext();
+  const bootstrapContext = useSchoolBootstrap();
+  const sessionContext = useSessionContext();
   const [isClassModalOpen, setIsClassModalOpen] = useState(false);
   const [isResultModalOpen, setIsResultModalOpen] = useState(false);
-  const [totalStudents, setTotalStudents] = useState(0);
-  const [totalClasses, setTotalClasses] = useState(0);
-  const [currentSession, setCurrentSession] = useState("");
-  const [currentTerm, setCurrentTerm] = useState("");
-  const [isStatsLoading, setIsStatsLoading] = useState(true);
-  const displaySessionName = selectedSessionName || currentSession || "Not set";
-  const resolvedTotalClasses =
-    Number(totalClasses) > 0
-      ? Number(totalClasses)
-      : Object.keys(schoolData?.classes || {}).length;
+  const handledRouteModalRequestRef = useRef("");
+  const lastHighPriorityWarmSignatureRef = useRef("");
+  const lastTeacherBackfillRequestRef = useRef("");
 
-  const getBootstrapSubjectsByClass = useCallback((classId = "") => {
-    const normalizedClassId = String(classId || "").trim().toLowerCase();
-    const isJunior = ["jss1", "jss2", "jss3"].includes(normalizedClassId);
-    const catalog = schoolData?.subjects || {};
-    const scopedSubjects = isJunior ? catalog?.junior : catalog?.senior;
-    return Array.isArray(scopedSubjects) ? scopedSubjects : [];
-  }, [schoolData]);
+  const stableAuth = useMemo(
+    () => ({
+      isAdmin: Boolean(authContext?.isAdmin),
+      authUserId: String(authContext?.authUser?.uid || "").trim(),
+      schoolId: String(authContext?.schoolId || "").trim(),
+    }),
+    [authContext?.isAdmin, authContext?.authUser?.uid, authContext?.schoolId]
+  );
 
-  useEffect(() => {
-    if (isBootstrapLoading) return;
-    if (!authUser?.uid) {
-      navigate("/login", { replace: true });
-      return;
+  const stableSession = useMemo(
+    () => ({
+      selectedSessionId: String(sessionContext?.selectedSessionId || "").trim(),
+      selectedSessionName: String(sessionContext?.selectedSessionName || "").trim(),
+      selectedTermId: String(sessionContext?.selectedTermId || "").trim(),
+      activeSessionId: String(sessionContext?.activeSessionId || "").trim(),
+      activeTermId: String(sessionContext?.activeTermId || "").trim(),
+      isHistoricalView: Boolean(sessionContext?.isHistoricalView),
+      isReadOnlyView: Boolean(sessionContext?.isReadOnlyView),
+      isPastTermView: Boolean(sessionContext?.isPastTermView),
+    }),
+    [
+      sessionContext?.selectedSessionId,
+      sessionContext?.selectedSessionName,
+      sessionContext?.selectedTermId,
+      sessionContext?.activeSessionId,
+      sessionContext?.activeTermId,
+      sessionContext?.isHistoricalView,
+      sessionContext?.isReadOnlyView,
+      sessionContext?.isPastTermView,
+    ]
+  );
+
+  const schoolData = useMemo(
+    () => bootstrapContext?.schoolData || EMPTY_SCHOOL_DATA,
+    [bootstrapContext?.schoolData]
+  );
+  const isBootstrapLoading = Boolean(bootstrapContext?.isLoading);
+  const recordClassIdsGetter = authContext?.getRecordClassIds;
+  const recordSubjectsForClassGetter = authContext?.getRecordSubjectsForClass;
+
+  const getStableRecordClassIds = useCallback(
+    () => recordClassIdsGetter?.() || [],
+    [recordClassIdsGetter]
+  );
+
+  const getStableRecordSubjectsForClass = useCallback(
+    (classId) => recordSubjectsForClassGetter?.(classId) || [],
+    [recordSubjectsForClassGetter]
+  );
+
+  const isOnSchoolDashboard = useMemo(
+    () => location.pathname === SCHOOL_DASHBOARD_ROUTE,
+    [location.pathname]
+  );
+
+  const resolvedSessionId = useMemo(
+    () => stableSession.selectedSessionId || stableSession.activeSessionId || "",
+    [stableSession.selectedSessionId, stableSession.activeSessionId]
+  );
+  const resolvedTermId = useMemo(
+    () => stableSession.selectedTermId || stableSession.activeTermId || "term1",
+    [stableSession.selectedTermId, stableSession.activeTermId]
+  );
+
+  const dashboardStatsQueryKey = useMemo(
+    () => [
+      "school-dashboard",
+      stableAuth.schoolId || "none",
+      resolvedSessionId || "none",
+      stableAuth.authUserId || "anonymous",
+    ],
+    [stableAuth.schoolId, stableAuth.authUserId, resolvedSessionId]
+  );
+
+  const {
+    data: dashboardStatsData,
+    isPending: isDashboardStatsPending,
+  } = useQuery({
+    queryKey: dashboardStatsQueryKey,
+    queryFn: fetchSchoolDashboardStats,
+    enabled:
+      !isBootstrapLoading &&
+      Boolean(stableAuth.schoolId) &&
+      Boolean(stableAuth.authUserId),
+    staleTime: SCHOOL_DASHBOARD_STALE_TIME,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: false,
+    placeholderData: (previousData) => previousData,
+  });
+
+  const dashboardStats = useMemo(
+    () => dashboardStatsData || EMPTY_DASHBOARD_STATS,
+    [dashboardStatsData]
+  );
+
+  const totalStudents = useMemo(
+    () => Number(dashboardStats?.totalStudents) || 0,
+    [dashboardStats?.totalStudents]
+  );
+  const totalClasses = useMemo(
+    () => Number(dashboardStats?.totalClasses) || 0,
+    [dashboardStats?.totalClasses]
+  );
+  const bootstrapClassCount = useMemo(
+    () => Object.keys(schoolData?.classes || {}).length,
+    [schoolData]
+  );
+  const resolvedTotalClasses = useMemo(
+    () => (totalClasses > 0 ? totalClasses : bootstrapClassCount),
+    [bootstrapClassCount, totalClasses]
+  );
+  const displaySessionName = useMemo(
+    () => stableSession.selectedSessionName || "Not set",
+    [stableSession.selectedSessionName]
+  );
+  const displayTermName = useMemo(
+    () => getTermDisplayName(resolvedTermId),
+    [resolvedTermId]
+  );
+  const isStatsLoading =
+    !isBootstrapLoading && isDashboardStatsPending && !dashboardStatsData;
+
+  const handleOpenClassModal = useCallback(() => {
+    setIsClassModalOpen(true);
+  }, []);
+
+  const handleCloseClassModal = useCallback(() => {
+    setIsClassModalOpen(false);
+  }, []);
+
+  const handleOpenResultModal = useCallback(() => {
+    setIsResultModalOpen(true);
+  }, []);
+
+  const handleCloseResultModal = useCallback(() => {
+    setIsResultModalOpen(false);
+  }, []);
+
+  const handleOpenAdminConfig = useCallback(() => {
+    navigate("/admin-config");
+  }, [navigate]);
+
+  const clearDashboardRouteState = useCallback(() => {
+    navigate(SCHOOL_DASHBOARD_ROUTE, { replace: true });
+  }, [navigate]);
+
+  const routeModalRequest = useMemo(() => {
+    if (!isOnSchoolDashboard) {
+      return "";
     }
-    if (!schoolId) {
-      navigate("/welcome", { replace: true });
-      return;
-    }
-    setCurrentTerm(selectedTermId || activeTermId || "term1");
-  }, [activeTermId, authUser?.uid, isBootstrapLoading, navigate, schoolId, selectedTermId]);
-
-  // Calculate real statistics from stored data
-  useEffect(() => {
-    const loadStats = async () => {
-      if (!schoolId) {
-        setIsStatsLoading(false);
-        return;
-      }
-
-      try {
-        setIsStatsLoading(true);
-        const stats = await getSessionDashboardStats(schoolId, selectedSessionId);
-        setTotalStudents(Number(stats?.totalStudents) || 0);
-        setTotalClasses(Number(stats?.totalClasses) || 0);
-        setCurrentSession(selectedSessionName || "");
-        setCurrentTerm(selectedTermId || activeTermId || "term1");
-      } catch (error) {
-        console.error("Error loading statistics:", error);
-      } finally {
-        setIsStatsLoading(false);
-      }
-    };
-
-    loadStats();
-  }, [schoolId, selectedSessionId, selectedSessionName, selectedTermId, activeTermId]);
-
-  useEffect(() => {
-    if (location.pathname !== "/school-dashboard") {
-      return;
-    }
-
     if (location.state?.openClassModal) {
-      setIsClassModalOpen(true);
-      navigate("/school-dashboard", { replace: true });
-      return;
+      return "class";
     }
-
     if (location.state?.openRecordModal) {
-      setIsResultModalOpen(true);
-      navigate("/school-dashboard", { replace: true });
+      return "record";
     }
-  }, [location.pathname, location.state, navigate]);
+    return "";
+  }, [isOnSchoolDashboard, location.state?.openClassModal, location.state?.openRecordModal]);
 
-  useEffect(() => {
+  const recentSelection = useMemo(() => {
+    if (!stableAuth.authUserId || !stableAuth.schoolId) {
+      return { class: "", subject: "", term: "", session: "" };
+    }
+
+    return canonicalizeResultSelection(
+      getResultSelection(stableAuth.authUserId),
+      stableAuth.schoolId
+    );
+  }, [stableAuth.authUserId, stableAuth.schoolId]);
+
+  const recentClassId = useMemo(
+    () => String(recentSelection?.class || "").trim(),
+    [recentSelection?.class]
+  );
+  const recentSubjectId = useMemo(
+    () => String(recentSelection?.subject || "").trim(),
+    [recentSelection?.subject]
+  );
+
+  const teacherClassIds = useMemo(
+    () =>
+      stableAuth.isAdmin
+        ? []
+        : [
+            ...new Set(
+              getStableRecordClassIds()
+                .map((classId) => String(classId || "").trim())
+                .filter(Boolean)
+            ),
+          ],
+    [getStableRecordClassIds, stableAuth.isAdmin]
+  );
+
+  const teacherScopes = useMemo(
+    () =>
+      !stableAuth.schoolId || !resolvedSessionId || stableAuth.isAdmin
+        ? []
+        : teacherClassIds.flatMap((classId) =>
+            getStableRecordSubjectsForClass(classId)
+              .map((subjectId) => String(subjectId || "").trim())
+              .filter(Boolean)
+              .map((subjectId) => ({
+                schoolId: stableAuth.schoolId,
+                classId,
+                subjectId,
+                sessionId: resolvedSessionId,
+                termId: resolvedTermId,
+              }))
+          ),
+    [
+      getStableRecordSubjectsForClass,
+      resolvedSessionId,
+      resolvedTermId,
+      stableAuth.isAdmin,
+      stableAuth.schoolId,
+      teacherClassIds,
+    ]
+  );
+
+  const prioritizedTeacherScopes = useMemo(() => {
+    if (teacherScopes.length === 0) {
+      return [];
+    }
+
+    return [
+      ...teacherScopes.filter(
+        (scope) =>
+          scope.classId === recentClassId && scope.subjectId === recentSubjectId
+      ),
+      ...teacherScopes.filter(
+        (scope) =>
+          !(scope.classId === recentClassId && scope.subjectId === recentSubjectId)
+      ),
+    ];
+  }, [recentClassId, recentSubjectId, teacherScopes]);
+
+  const highPriorityWarmScopes = useMemo(() => {
     if (
       isBootstrapLoading ||
-      !schoolId ||
-      !authUser?.uid ||
-      !location.pathname ||
-      location.pathname !== "/school-dashboard"
+      !isOnSchoolDashboard ||
+      !stableAuth.schoolId ||
+      !stableAuth.authUserId ||
+      !resolvedSessionId
     ) {
-      return;
+      return [];
     }
 
-    const resolvedSessionId = selectedSessionId || activeSessionId || "";
-    const resolvedTermId = selectedTermId || activeTermId || "term1";
-    if (!resolvedSessionId) {
-      return;
-    }
-
-    if (isAdmin) {
-      const recentSelection = canonicalizeResultSelection(
-        getResultSelection(authUser.uid),
-        schoolId
-      );
-      const recentClassId = String(recentSelection?.class || "").trim();
-      const recentSubjectId = String(recentSelection?.subject || "").trim();
-      if (recentClassId && recentSubjectId) {
-        queueRecordDashboardWarmScopes(
-          [
+    if (stableAuth.isAdmin) {
+      return recentClassId && recentSubjectId
+        ? [
             {
-              schoolId,
+              schoolId: stableAuth.schoolId,
               classId: recentClassId,
               subjectId: recentSubjectId,
               sessionId: resolvedSessionId,
               termId: resolvedTermId,
             },
-          ],
-          { limit: 1 }
-        );
-      }
-      return;
+          ]
+        : [];
     }
 
-    const teacherClassIds = [...new Set(
-      (assignedClasses || [])
-        .map((classId) => String(classId || "").trim())
-        .filter((classId) => classId && canAccessClass(classId))
-    )];
-
-    const scopes = teacherClassIds.flatMap((classId) =>
-      getBootstrapSubjectsByClass(classId)
-        .filter((subjectId) => canAccessSubject(subjectId))
-        .map((subjectId) => ({
-          schoolId,
-          classId,
-          subjectId,
-          sessionId: resolvedSessionId,
-          termId: resolvedTermId,
-        }))
-    );
-
-    queueRecordDashboardWarmScopes(scopes, { limit: 8 });
+    return prioritizedTeacherScopes;
   }, [
-    activeSessionId,
-    activeTermId,
-    assignedClasses,
-    authUser?.uid,
-    canAccessClass,
-    canAccessSubject,
-    getBootstrapSubjectsByClass,
-    isAdmin,
     isBootstrapLoading,
-    location.pathname,
-    schoolId,
-    selectedSessionId,
-    selectedTermId,
+    isOnSchoolDashboard,
+    prioritizedTeacherScopes,
+    recentClassId,
+    recentSubjectId,
+    resolvedSessionId,
+    resolvedTermId,
+    stableAuth.authUserId,
+    stableAuth.isAdmin,
+    stableAuth.schoolId,
+  ]);
+
+  const highPriorityWarmLimit = stableAuth.isAdmin ? 1 : 8;
+  const highPriorityWarmSignature = useMemo(
+    () => buildRecordScopeSignature(highPriorityWarmScopes.slice(0, highPriorityWarmLimit)),
+    [highPriorityWarmLimit, highPriorityWarmScopes]
+  );
+
+  const isActiveScope = useMemo(
+    () =>
+      !!resolvedSessionId &&
+      !!stableSession.activeSessionId &&
+      resolvedSessionId === stableSession.activeSessionId &&
+      String(resolvedTermId || "term1").trim().toLowerCase() ===
+        String(stableSession.activeTermId || resolvedTermId || "term1")
+          .trim()
+          .toLowerCase() &&
+      !stableSession.isHistoricalView &&
+      !stableSession.isReadOnlyView,
+    [
+      resolvedSessionId,
+      resolvedTermId,
+      stableSession.activeSessionId,
+      stableSession.activeTermId,
+      stableSession.isHistoricalView,
+      stableSession.isReadOnlyView,
+    ]
+  );
+
+  const teacherBackfillSignature = useMemo(
+    () => buildRecordScopeSignature(teacherScopes),
+    [teacherScopes]
+  );
+  const teacherBackfillMarkerKey = useMemo(
+    () =>
+      buildTeacherRecordBackfillMarkerKey({
+        schoolId: stableAuth.schoolId,
+        userId: stableAuth.authUserId,
+        sessionId: resolvedSessionId,
+        termId: resolvedTermId,
+      }),
+    [resolvedSessionId, resolvedTermId, stableAuth.authUserId, stableAuth.schoolId]
+  );
+  const teacherBackfillRequestKey = useMemo(() => {
+    if (
+      isBootstrapLoading ||
+      stableAuth.isAdmin ||
+      !isOnSchoolDashboard ||
+      !stableAuth.schoolId ||
+      !stableAuth.authUserId ||
+      !isActiveScope ||
+      !teacherBackfillSignature
+    ) {
+      return "";
+    }
+
+    return `${teacherBackfillMarkerKey}::${teacherBackfillSignature}`;
+  }, [
+    isActiveScope,
+    isBootstrapLoading,
+    isOnSchoolDashboard,
+    stableAuth.authUserId,
+    stableAuth.isAdmin,
+    stableAuth.schoolId,
+    teacherBackfillMarkerKey,
+    teacherBackfillSignature,
   ]);
 
   useEffect(() => {
-    if (
-      isBootstrapLoading ||
-      isAdmin ||
-      !schoolId ||
-      !authUser?.uid ||
-      !location.pathname ||
-      location.pathname !== "/school-dashboard"
-    ) {
+    if (isBootstrapLoading) return;
+    if (!stableAuth.authUserId) {
+      navigate("/login", { replace: true });
+      return;
+    }
+    if (!stableAuth.schoolId) {
+      navigate("/welcome", { replace: true });
+      return;
+    }
+  }, [
+    isBootstrapLoading,
+    navigate,
+    stableAuth.authUserId,
+    stableAuth.schoolId,
+  ]);
+
+  useEffect(() => {
+    if (!routeModalRequest) {
+      handledRouteModalRequestRef.current = "";
       return;
     }
 
-    const resolvedSessionId = selectedSessionId || activeSessionId || "";
-    const resolvedTermId = selectedTermId || activeTermId || "term1";
-    const isActiveScope =
-      !!resolvedSessionId &&
-      !!activeSessionId &&
-      String(resolvedSessionId || "").trim() === String(activeSessionId || "").trim() &&
-      String(resolvedTermId || "term1").trim().toLowerCase() ===
-        String(activeTermId || resolvedTermId || "term1").trim().toLowerCase() &&
-      !isHistoricalView &&
-      !isReadOnlyView;
-
-    if (!isActiveScope) {
+    if (handledRouteModalRequestRef.current === routeModalRequest) {
       return;
     }
 
-    const teacherClassIds = [...new Set(
-      (assignedClasses || [])
-        .map((classId) => String(classId || "").trim())
-        .filter((classId) => classId && canAccessClass(classId))
-    )];
+    handledRouteModalRequestRef.current = routeModalRequest;
 
-    const scopes = teacherClassIds.flatMap((classId) =>
-      getBootstrapSubjectsByClass(classId)
-        .filter((subjectId) => canAccessSubject(subjectId))
-        .map((subjectId) => ({
-          schoolId,
-          classId,
-          subjectId,
-          sessionId: resolvedSessionId,
-          termId: resolvedTermId,
-        }))
-    );
-    if (scopes.length === 0) {
+    if (routeModalRequest === "class") {
+      setIsClassModalOpen(true);
+      clearDashboardRouteState();
       return;
     }
 
-    const markerKey = buildTeacherRecordBackfillMarkerKey({
-      schoolId,
-      userId: authUser.uid,
-      sessionId: resolvedSessionId,
-      termId: resolvedTermId,
+    if (routeModalRequest === "record") {
+      setIsResultModalOpen(true);
+      clearDashboardRouteState();
+    }
+  }, [clearDashboardRouteState, routeModalRequest]);
+
+  useEffect(() => {
+    if (!highPriorityWarmSignature) {
+      lastHighPriorityWarmSignatureRef.current = "";
+      return;
+    }
+
+    if (lastHighPriorityWarmSignatureRef.current === highPriorityWarmSignature) {
+      return;
+    }
+
+    lastHighPriorityWarmSignatureRef.current = highPriorityWarmSignature;
+    queueRecordDashboardWarmScopes(highPriorityWarmScopes, {
+      limit: highPriorityWarmLimit,
+      priority: "high",
     });
-    const nextSignature = buildRecordScopeSignature(scopes);
+  }, [
+    highPriorityWarmLimit,
+    highPriorityWarmScopes,
+    highPriorityWarmSignature,
+  ]);
+
+  useEffect(() => {
+    if (!teacherBackfillRequestKey) {
+      lastTeacherBackfillRequestRef.current = "";
+      return;
+    }
+
+    if (lastTeacherBackfillRequestRef.current === teacherBackfillRequestKey) {
+      return;
+    }
+
+    if (teacherScopes.length === 0) {
+      return;
+    }
+
     let previousSignature = "";
     try {
-      previousSignature = String(window.localStorage?.getItem(markerKey) || "");
+      previousSignature = String(window.localStorage?.getItem(teacherBackfillMarkerKey) || "");
     } catch {
       previousSignature = "";
     }
 
-    if (previousSignature === nextSignature) {
+    if (previousSignature === teacherBackfillSignature) {
+      lastTeacherBackfillRequestRef.current = teacherBackfillRequestKey;
       return;
     }
 
-    queueRecordDashboardWarmScopes(scopes, { limit: scopes.length });
+    lastTeacherBackfillRequestRef.current = teacherBackfillRequestKey;
+    queueRecordDashboardWarmScopes(teacherScopes, { limit: teacherScopes.length });
     try {
-      window.localStorage?.setItem(markerKey, nextSignature);
+      window.localStorage?.setItem(teacherBackfillMarkerKey, teacherBackfillSignature);
     } catch {
       // Ignore marker write failures; queueing already happened.
     }
   }, [
-    activeSessionId,
-    activeTermId,
-    assignedClasses,
-    authUser?.uid,
-    canAccessClass,
-    canAccessSubject,
-    getBootstrapSubjectsByClass,
-    isAdmin,
-    isBootstrapLoading,
-    isHistoricalView,
-    isReadOnlyView,
-    location.pathname,
-    schoolId,
-    selectedSessionId,
-    selectedTermId,
+    teacherBackfillMarkerKey,
+    teacherBackfillRequestKey,
+    teacherBackfillSignature,
+    teacherScopes,
   ]);
 
   return (
@@ -346,11 +571,11 @@ export default function SchoolDashboard() {
         </div>
       </div>
 
-      {isReadOnlyView && (
+      {stableSession.isReadOnlyView && (
         <div className="mb-6 rounded-lg border border-amber-300 bg-amber-100 px-4 py-3 text-sm font-medium text-amber-800 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
-          {isHistoricalView
+          {stableSession.isHistoricalView
             ? "Viewing historical session data. Changes will NOT affect the active session."
-            : isPastTermView
+            : stableSession.isPastTermView
               ? "Viewing a past term. This dashboard is showing read-only history."
               : "This view is read-only."}
         </div>
@@ -384,16 +609,20 @@ export default function SchoolDashboard() {
             {displaySessionName}
           </p>
           <p className="text-sm text-purple-700 dark:text-purple-300 font-medium mt-1">
-            {getTermDisplayName(currentTerm)}
+            {displayTermName}
           </p>
         </div>
       </div>
 
       {/* Action Buttons */}
-      <div className={`grid grid-cols-1 gap-6 ${isAdmin ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
+      <div
+        className={`grid grid-cols-1 gap-6 ${
+          stableAuth.isAdmin ? "md:grid-cols-3" : "md:grid-cols-2"
+        }`}
+      >
         {/* Go to Class Button */}
         <button
-          onClick={() => setIsClassModalOpen(true)}
+          onClick={handleOpenClassModal}
           className="flex flex-col items-center justify-center p-8 bg-blue-800 hover:bg-blue-900 dark:bg-blue-700 dark:hover:bg-blue-600 text-white rounded-lg transition-all duration-300 shadow-lg hover:shadow-xl"
         >
           <svg
@@ -417,7 +646,7 @@ export default function SchoolDashboard() {
 
         {/* Record Result Button */}
         <button
-          onClick={() => setIsResultModalOpen(true)}
+          onClick={handleOpenResultModal}
           className="flex flex-col items-center justify-center p-8 bg-green-600 hover:bg-green-700 dark:bg-green-700 dark:hover:bg-green-600 text-white rounded-lg transition-all duration-300 shadow-lg hover:shadow-xl"
         >
           <svg
@@ -439,9 +668,9 @@ export default function SchoolDashboard() {
           </p>
         </button>
 
-        {isAdmin && (
+        {stableAuth.isAdmin && (
           <button
-            onClick={() => navigate("/admin-config")}
+            onClick={handleOpenAdminConfig}
             className="flex flex-col items-center justify-center p-8 bg-purple-600 hover:bg-purple-700 dark:bg-purple-700 dark:hover:bg-purple-600 text-white rounded-lg transition-all duration-300 shadow-lg hover:shadow-xl"
           >
             <svg
@@ -474,16 +703,17 @@ export default function SchoolDashboard() {
       {/* Class Selection Modal */}
       <ClassSelectionModal
         isOpen={isClassModalOpen}
-        onClose={() => setIsClassModalOpen(false)}
+        onClose={handleCloseClassModal}
       />
 
       {/* Result Modal */}
       <ResultModal
         isOpen={isResultModalOpen}
-        onClose={() => setIsResultModalOpen(false)}
+        onClose={handleCloseResultModal}
       />
         </>
       )}
     </div>
   );
 }
+

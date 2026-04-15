@@ -7,6 +7,50 @@ const normalizeAssignments = (value) => {
   return [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))];
 };
 
+const normalizeClassAccessToken = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+
+const normalizeSubjectAccessToken = (value) => {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s*&\s*/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  if (normalized === "basic science" || normalized === "basic science and technology") {
+    return "basic_science_and_technology";
+  }
+  return normalized.replace(/\s+/g, "_");
+};
+
+const normalizeSubjectAssignments = (value) => {
+  if (!Array.isArray(value)) return [];
+
+  const grouped = new Map();
+
+  value.forEach((item) => {
+    const subjectId = String(item?.subjectId || item?.subject || "").trim();
+    const classIds = normalizeAssignments(item?.classIds || item?.classes);
+    if (!subjectId || classIds.length === 0) return;
+
+    const subjectToken = normalizeSubjectAccessToken(subjectId) || subjectId;
+    const current = grouped.get(subjectToken) || {
+      subjectId,
+      classIds: [],
+    };
+    current.subjectId = current.subjectId || subjectId;
+    current.classIds = normalizeAssignments([...(current.classIds || []), ...classIds]);
+    grouped.set(subjectToken, current);
+  });
+
+  return [...grouped.values()].sort((left, right) =>
+    String(left?.subjectId || "").localeCompare(String(right?.subjectId || ""))
+  );
+};
+
 const normalizeRole = (value) =>
   String(value || "")
     .trim()
@@ -20,8 +64,21 @@ export const buildUserScopeRecord = (uid, data = {}) => ({
   schoolId: String(data?.schoolId || "").trim(),
   role: normalizeRole(data?.role),
   isActive: data?.isActive !== false,
+  classTeacherClasses: normalizeAssignments(data?.classTeacherClasses),
+  classTeacherClassTokens: normalizeAssignments(data?.classTeacherClassTokens).map(
+    normalizeClassAccessToken
+  ),
+  subjectAssignments: normalizeSubjectAssignments(data?.subjectAssignments),
   assignedClasses: normalizeAssignments(data?.assignedClasses),
+  assignedClassTokens: normalizeAssignments(data?.assignedClassTokens).map(
+    normalizeClassAccessToken
+  ),
   assignedSubjects: normalizeAssignments(data?.assignedSubjects),
+  assignedSubjectTokens: normalizeAssignments(data?.assignedSubjectTokens).map(
+    normalizeSubjectAccessToken
+  ),
+  assignedSubjectKeys: normalizeAssignments(data?.assignedSubjectKeys),
+  assignedSubjectClassKeys: normalizeAssignments(data?.assignedSubjectClassKeys),
 });
 
 export const setCachedUserScope = (uid, data = {}) => {
@@ -56,8 +113,15 @@ export const getCachedUserScopeForSchool = (schoolId, uid = "") => {
   return {
     ...scope,
     isAdmin: sameSchool && scope.isActive && scope.role === "admin",
+    classTeacherClasses: sameSchool ? [...scope.classTeacherClasses] : [],
+    classTeacherClassTokens: sameSchool ? [...scope.classTeacherClassTokens] : [],
+    subjectAssignments: sameSchool ? [...scope.subjectAssignments] : [],
     assignedClasses: sameSchool ? [...scope.assignedClasses] : [],
+    assignedClassTokens: sameSchool ? [...scope.assignedClassTokens] : [],
     assignedSubjects: sameSchool ? [...scope.assignedSubjects] : [],
+    assignedSubjectTokens: sameSchool ? [...scope.assignedSubjectTokens] : [],
+    assignedSubjectKeys: sameSchool ? [...scope.assignedSubjectKeys] : [],
+    assignedSubjectClassKeys: sameSchool ? [...scope.assignedSubjectClassKeys] : [],
   };
 };
 

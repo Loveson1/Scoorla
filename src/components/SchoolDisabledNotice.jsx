@@ -1,10 +1,15 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Loader2 } from "lucide-react";
 import { logoutUser } from "../utils/authUtils";
 
 export default function SchoolDisabledNotice() {
   const navigate = useNavigate();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const handleLogout = async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
     try {
       await logoutUser();
     } finally {
@@ -29,9 +34,11 @@ export default function SchoolDisabledNotice() {
           <button
             type="button"
             onClick={handleLogout}
-            className="rounded-lg bg-red-700 px-5 py-3 font-semibold text-white transition-colors hover:bg-red-600"
+            disabled={isLoggingOut}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-red-700 px-5 py-3 font-semibold text-white transition-colors hover:bg-red-600 disabled:opacity-70"
           >
-            Sign Out
+            {isLoggingOut && <Loader2 className="h-4 w-4 animate-spin" />}
+            {isLoggingOut ? "Signing Out..." : "Sign Out"}
           </button>
           <a
             href="/teacher-login"

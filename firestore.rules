@@ -57,68 +57,56 @@ service cloud.firestore {
         );
     }
 
+    function classListHas(listValue, classId) {
+      return listValue is list &&
+        (
+          listValue.hasAny([classId]) ||
+          (
+            classId.matches("(?i)^jss[\\s_-]*1$") &&
+            listValue.hasAny(["jss1", "JSS 1", "jss 1", "JSS1"])
+          ) ||
+          (
+            classId.matches("(?i)^jss[\\s_-]*2$") &&
+            listValue.hasAny(["jss2", "JSS 2", "jss 2", "JSS2"])
+          ) ||
+          (
+            classId.matches("(?i)^jss[\\s_-]*3$") &&
+            listValue.hasAny(["jss3", "JSS 3", "jss 3", "JSS3"])
+          ) ||
+          (
+            classId.matches("(?i)^sss[\\s_-]*1$") &&
+            listValue.hasAny(["sss1", "SSS 1", "sss 1", "SSS1"])
+          ) ||
+          (
+            classId.matches("(?i)^sss[\\s_-]*2$") &&
+            listValue.hasAny(["sss2", "SSS 2", "sss 2", "SSS2"])
+          ) ||
+          (
+            classId.matches("(?i)^sss[\\s_-]*3$") &&
+            listValue.hasAny(["sss3", "SSS 3", "sss 3", "SSS3"])
+          )
+        );
+    }
+
     function hasAssignedClass(classId) {
       return isTeacher() &&
         classId is string &&
         (
+          classListHas(userData().assignedClassTokens, classId) ||
+          classListHas(userData().assignedClasses, classId)
+        );
+    }
+
+    function hasManagedClass(classId) {
+      return isTeacher() &&
+        classId is string &&
+        (
+          classListHas(userData().classTeacherClassTokens, classId) ||
+          classListHas(userData().classTeacherClasses, classId) ||
           (
-            userData().assignedClassTokens is list &&
-            (
-              (
-                classId.matches("(?i)^jss[\\s_-]*1$") &&
-                userData().assignedClassTokens.hasAny(["jss1"])
-              ) ||
-              (
-                classId.matches("(?i)^jss[\\s_-]*2$") &&
-                userData().assignedClassTokens.hasAny(["jss2"])
-              ) ||
-              (
-                classId.matches("(?i)^jss[\\s_-]*3$") &&
-                userData().assignedClassTokens.hasAny(["jss3"])
-              ) ||
-              (
-                classId.matches("(?i)^sss[\\s_-]*1$") &&
-                userData().assignedClassTokens.hasAny(["sss1"])
-              ) ||
-              (
-                classId.matches("(?i)^sss[\\s_-]*2$") &&
-                userData().assignedClassTokens.hasAny(["sss2"])
-              ) ||
-              (
-                classId.matches("(?i)^sss[\\s_-]*3$") &&
-                userData().assignedClassTokens.hasAny(["sss3"])
-              )
-            )
-          ) ||
-          (
-            userData().assignedClasses is list &&
-            (
-              userData().assignedClasses.hasAny([classId]) ||
-              (
-                classId.matches("(?i)^jss[\\s_-]*1$") &&
-                userData().assignedClasses.hasAny(["jss1", "JSS 1", "jss 1", "JSS1"])
-              ) ||
-              (
-                classId.matches("(?i)^jss[\\s_-]*2$") &&
-                userData().assignedClasses.hasAny(["jss2", "JSS 2", "jss 2", "JSS2"])
-              ) ||
-              (
-                classId.matches("(?i)^jss[\\s_-]*3$") &&
-                userData().assignedClasses.hasAny(["jss3", "JSS 3", "jss 3", "JSS3"])
-              ) ||
-              (
-                classId.matches("(?i)^sss[\\s_-]*1$") &&
-                userData().assignedClasses.hasAny(["sss1", "SSS 1", "sss 1", "SSS1"])
-              ) ||
-              (
-                classId.matches("(?i)^sss[\\s_-]*2$") &&
-                userData().assignedClasses.hasAny(["sss2", "SSS 2", "sss 2", "SSS2"])
-              ) ||
-              (
-                classId.matches("(?i)^sss[\\s_-]*3$") &&
-                userData().assignedClasses.hasAny(["sss3", "SSS 3", "sss 3", "SSS3"])
-              )
-            )
+            !(userData().classTeacherClassTokens is list) &&
+            !(userData().classTeacherClasses is list) &&
+            hasAssignedClass(classId)
           )
         );
     }
@@ -162,6 +150,23 @@ service cloud.firestore {
               subjectId.matches("(?i)^.*basic_science_and_technology.*$")
             ) &&
             userData().assignedSubjectTokens.hasAny(["basic_science_and_technology"])
+          )
+        );
+    }
+
+    function hasAssignedSubjectClass(classValue, subjectValue) {
+      return isTeacher() &&
+        classValue is string &&
+        subjectValue is string &&
+        (
+          (
+            userData().assignedSubjectClassKeys is list &&
+            userData().assignedSubjectClassKeys.hasAny([classValue + "__" + subjectValue])
+          ) ||
+          (
+            !(userData().assignedSubjectClassKeys is list) &&
+            hasAssignedClass(classValue) &&
+            hasAssignedSubject(subjectValue)
           )
         );
     }
@@ -213,6 +218,26 @@ service cloud.firestore {
           ? resource.data.subjectId
           : resource.data.subject is string
             ? resource.data.subject
+            : null;
+    }
+
+    function requestLtcCacheClassValue() {
+      return request.resource.data.classToken is string
+        ? request.resource.data.classToken
+        : request.resource.data.classId is string
+          ? request.resource.data.classId
+          : request.resource.data.class is string
+            ? request.resource.data.class
+            : null;
+    }
+
+    function requestLtcCacheSubjectValue() {
+      return request.resource.data.subjectToken is string
+        ? request.resource.data.subjectToken
+        : request.resource.data.subjectId is string
+          ? request.resource.data.subjectId
+          : request.resource.data.subject is string
+            ? request.resource.data.subject
             : null;
     }
 
@@ -275,12 +300,27 @@ service cloud.firestore {
       return isTeacher() &&
         (existingInUserSchool() || legacyScoreInUserSchool()) &&
         (
-          scoreMatchesTeacherCanonicalClassScope() ||
-          hasAssignedClass(scoreReadClassValue())
-        ) &&
-        (
-          scoreMatchesTeacherCanonicalSubjectScope() ||
-          hasAssignedSubject(scoreReadSubjectValue())
+          (
+            resource.data.classToken is string &&
+            resource.data.subjectToken is string &&
+            hasAssignedSubjectClass(resource.data.classToken, resource.data.subjectToken)
+          ) ||
+          (
+            resource.data.classId is string &&
+            resource.data.subjectId is string &&
+            hasAssignedSubjectClass(resource.data.classId, resource.data.subjectId)
+          ) ||
+          (
+            resource.data.classToken is string &&
+            resource.data.subjectId is string &&
+            hasAssignedSubjectClass(resource.data.classToken, resource.data.subjectId)
+          ) ||
+          (
+            resource.data.classId is string &&
+            resource.data.subjectToken is string &&
+            hasAssignedSubjectClass(resource.data.classId, resource.data.subjectToken)
+          ) ||
+          hasAssignedSubjectClass(scoreReadClassValue(), scoreReadSubjectValue())
         );
     }
 
@@ -318,12 +358,39 @@ service cloud.firestore {
         request.resource.data.scoreId == scoreId;
     }
 
+    function requestHasAssignedSubjectClassScope() {
+      return (
+        request.resource.data.classToken is string &&
+        request.resource.data.subjectToken is string &&
+        hasAssignedSubjectClass(request.resource.data.classToken, request.resource.data.subjectToken)
+      ) ||
+      (
+        request.resource.data.classId is string &&
+        request.resource.data.subjectId is string &&
+        hasAssignedSubjectClass(request.resource.data.classId, request.resource.data.subjectId)
+      ) ||
+      (
+        request.resource.data.classToken is string &&
+        request.resource.data.subjectId is string &&
+        hasAssignedSubjectClass(request.resource.data.classToken, request.resource.data.subjectId)
+      ) ||
+      (
+        request.resource.data.classId is string &&
+        request.resource.data.subjectToken is string &&
+        hasAssignedSubjectClass(request.resource.data.classId, request.resource.data.subjectToken)
+      ) ||
+      (
+        !(userData().assignedSubjectClassKeys is list) &&
+        requestHasAssignedClassScope() &&
+        requestHasAssignedSubjectScope()
+      );
+    }
+
     function teacherScoreRequestAllowed(scoreId) {
       return canRecordScores() &&
         request.resource.data.schoolId is string &&
         sameSchool(request.resource.data.schoolId) &&
-        requestHasAssignedClassScope() &&
-        requestHasAssignedSubjectScope() &&
+        requestHasAssignedSubjectClassScope() &&
         scoreDocIdMatchesRequest(scoreId) &&
         isConfiguredActiveSession(request.resource.data.sessionId) &&
         isConfiguredActiveTermContext(request.resource.data.termId, request.resource.data.termDocId);
@@ -800,14 +867,14 @@ service cloud.firestore {
       allow read: if isSuperAdmin() ||
         (
           (isAdmin() && existingInUserSchool()) ||
-          (isTeacher() && existingInUserSchool() && hasAssignedClass(resource.data.classId))
+          (isTeacher() && existingInUserSchool() && hasManagedClass(resource.data.classId))
         );
 
       allow create: if isSuperAdmin() ||
         (
           canManageClassRoster() &&
           createInUserSchool() &&
-          (isAdmin() || hasAssignedClass(request.resource.data.classId)) &&
+          (isAdmin() || hasManagedClass(request.resource.data.classId)) &&
           (
             sessionIsEditable(request.resource.data.sessionId) ||
             isConfiguredActiveSession(request.resource.data.sessionId)
@@ -821,8 +888,8 @@ service cloud.firestore {
           (
             isAdmin() ||
             (
-              hasAssignedClass(resource.data.classId) &&
-              hasAssignedClass(request.resource.data.classId)
+              hasManagedClass(resource.data.classId) &&
+              hasManagedClass(request.resource.data.classId)
             )
           ) &&
           (
@@ -839,7 +906,7 @@ service cloud.firestore {
         (
           canManageClassRoster() &&
           existingInUserSchool() &&
-          (isAdmin() || hasAssignedClass(resource.data.classId)) &&
+          (isAdmin() || hasManagedClass(resource.data.classId)) &&
           (
             sessionIsEditable(resource.data.sessionId) ||
             isConfiguredActiveSession(resource.data.sessionId)
@@ -897,7 +964,7 @@ service cloud.firestore {
         (
           canRecordScores() &&
           existingInUserSchool() &&
-          (isAdmin() || (hasAssignedClass(resource.data.classId) && hasAssignedSubject(resource.data.subjectId))) &&
+          (isAdmin() || hasAssignedSubjectClass(resource.data.classId, resource.data.subjectId)) &&
           isConfiguredActiveSession(resource.data.sessionId) &&
           isConfiguredActiveTermContext(resource.data.termId, resource.data.termDocId)
         );
@@ -910,8 +977,7 @@ service cloud.firestore {
           (
             isTeacher() &&
             (resource.data.schoolId == userSchoolId() || legacyLtcCacheInUserSchool()) &&
-            hasAssignedClass(ltcCacheClassValue()) &&
-            hasAssignedSubject(ltcCacheSubjectValue())
+            hasAssignedSubjectClass(ltcCacheClassValue(), ltcCacheSubjectValue())
           )
         );
 
@@ -923,8 +989,7 @@ service cloud.firestore {
         (
           isTeacher() &&
           request.resource.data.schoolId == userSchoolId() &&
-          hasAssignedClass(ltcCacheClassValue()) &&
-          hasAssignedSubject(ltcCacheSubjectValue())
+          hasAssignedSubjectClass(requestLtcCacheClassValue(), requestLtcCacheSubjectValue())
         );
 
       allow update: if isSuperAdmin() ||
@@ -944,8 +1009,7 @@ service cloud.firestore {
         (
           isTeacher() &&
           (resource.data.schoolId == userSchoolId() || legacyLtcCacheInUserSchool()) &&
-          hasAssignedClass(ltcCacheClassValue()) &&
-          hasAssignedSubject(ltcCacheSubjectValue()) &&
+          hasAssignedSubjectClass(requestLtcCacheClassValue(), requestLtcCacheSubjectValue()) &&
           request.resource.data.schoolId == userSchoolId()
         );
 
@@ -959,7 +1023,7 @@ service cloud.firestore {
           (
             isTeacher() &&
             resource.data.schoolId == userSchoolId() &&
-            hasAssignedClass(ltcCacheClassValue())
+            hasManagedClass(ltcCacheClassValue())
           )
         );
 
@@ -970,7 +1034,7 @@ service cloud.firestore {
           request.resource.data.classId is string &&
           (
             isAdmin() ||
-            hasAssignedClass(request.resource.data.classId)
+            hasManagedClass(request.resource.data.classId)
           )
         );
 
@@ -984,8 +1048,7 @@ service cloud.firestore {
           (
             isTeacher() &&
             resource.data.schoolId == userSchoolId() &&
-            hasAssignedClass(ltcCacheClassValue()) &&
-            hasAssignedSubject(ltcCacheSubjectValue())
+            hasAssignedSubjectClass(ltcCacheClassValue(), ltcCacheSubjectValue())
           )
         );
 
@@ -1000,8 +1063,7 @@ service cloud.firestore {
             canRecordScores() &&
             request.resource.data.classId is string &&
             request.resource.data.subjectId is string &&
-            hasAssignedClass(request.resource.data.classId) &&
-            hasAssignedSubject(request.resource.data.subjectId)
+            hasAssignedSubjectClass(request.resource.data.classId, request.resource.data.subjectId)
           )
         ) &&
         request.resource.data.schoolId == userSchoolId();
@@ -1024,3 +1086,11 @@ service cloud.firestore {
     }
   }
 }
+
+
+
+
+
+
+
+

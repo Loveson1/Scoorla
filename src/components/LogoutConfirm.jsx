@@ -1,10 +1,14 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { logoutUser } from "../utils/authUtils";
-import { LogOut, AlertCircle } from "lucide-react";
+import { LogOut, AlertCircle, Loader2 } from "lucide-react";
 
 export default function LogoutConfirm({ isOpen, onClose, onConfirm }) {
   const navigate = useNavigate();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const handleLogout = async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
     try {
       await logoutUser();
       onConfirm?.();
@@ -12,6 +16,7 @@ export default function LogoutConfirm({ isOpen, onClose, onConfirm }) {
     } catch (error) {
       console.error("Logout error:", error);
       alert("Error logging out. Please try again.");
+      setIsLoggingOut(false);
     }
   };
 
@@ -41,16 +46,22 @@ export default function LogoutConfirm({ isOpen, onClose, onConfirm }) {
         <div className="flex gap-3">
           <button
             onClick={onClose}
+            disabled={isLoggingOut}
             className="flex-1 px-4 py-2 border-2 border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 font-semibold rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
           >
             Cancel
           </button>
           <button
             onClick={handleLogout}
+            disabled={isLoggingOut}
             className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600 text-white font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
           >
-            <LogOut className="w-4 h-4" />
-            <span>Sign Out</span>
+            {isLoggingOut ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <LogOut className="w-4 h-4" />
+            )}
+            <span>{isLoggingOut ? "Signing Out..." : "Sign Out"}</span>
           </button>
         </div>
       </div>

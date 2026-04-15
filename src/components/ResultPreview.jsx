@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   canonicalizeResultSelection,
@@ -151,7 +151,7 @@ const formatPdfLine = (value, fallback = "Not provided") => {
 
 export default function ResultPreview() {
   const navigate = useNavigate();
-  const { isAdmin, canAccessClass, canAccessSubject, authUser, schoolId } = useAuthContext();
+  const { isAdmin, canRecordClassSubject, authUser, schoolId } = useAuthContext();
   const { schoolData, adminSettings, isLoading: isBootstrapLoading } = useSchoolBootstrap();
   const {
     selectedSessionId,
@@ -165,8 +165,8 @@ export default function ResultPreview() {
   const [resultSelection, setResultSelection] = useState({});
   const [results, setResults] = useState([]);
 
-  const hasClassAccess = isAdmin || canAccessClass(resultSelection.class);
-  const hasSubjectAccess = isAdmin || canAccessSubject(resultSelection.subject);
+  const hasRecordAccess =
+    isAdmin || canRecordClassSubject(resultSelection.class, resultSelection.subject);
   const resultConfig = useMemo(() => adminSettings?.resultConfig || null, [adminSettings]);
 
   useEffect(() => {
@@ -231,7 +231,7 @@ export default function ResultPreview() {
       if (!schoolId || !resultSelection.class) return;
 
       try {
-        if (!hasClassAccess || !hasSubjectAccess) {
+        if (!hasRecordAccess) {
           setResults([]);
           return;
         }
@@ -277,8 +277,7 @@ export default function ResultPreview() {
     selectedSessionId,
     selectedTermId,
     isHistoricalView,
-    hasClassAccess,
-    hasSubjectAccess,
+    hasRecordAccess,
     adminSettings,
   ]);
 
@@ -711,7 +710,7 @@ export default function ResultPreview() {
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_right,_rgba(191,219,254,0.42),_transparent_38%),linear-gradient(180deg,_#f8fbff_0%,_#eff6ff_42%,_#f8fbff_100%)] px-3 py-4 md:px-8 md:py-6">
-      {!hasClassAccess || !hasSubjectAccess ? (
+      {!hasRecordAccess ? (
         <div className="mx-auto mb-4 max-w-6xl rounded-2xl border border-red-300 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 dark:border-red-700 dark:bg-red-900/20 dark:text-red-300">
           You are not assigned to this resource.
         </div>
@@ -735,7 +734,7 @@ export default function ResultPreview() {
         </button>
         <button
           onClick={handleDownloadPDF}
-          disabled={!hasClassAccess || !hasSubjectAccess}
+          disabled={!hasRecordAccess}
           className="px-6 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-700 dark:hover:bg-green-600 text-white font-semibold rounded-lg transition-all duration-300 disabled:cursor-not-allowed disabled:bg-green-300"
         >
           Download Score Sheet
@@ -948,3 +947,8 @@ export default function ResultPreview() {
     </div>
   );
 }
+
+
+
+
+

@@ -465,6 +465,20 @@ const normalizeClassMatchToken = (value) =>
     .toLowerCase()
     .replace(/[\s_-]+/g, "");
 
+const buildSubjectClassMatchKeys = (classId, subjectId) => {
+  const rawClassId = normalizeClassId(classId);
+  const rawSubjectId = normalizeSubjectId(subjectId);
+  const classToken = normalizeClassMatchToken(rawClassId);
+  const subjectToken = normalizeSubjectMatchToken(rawSubjectId);
+
+  return [...new Set([
+    rawClassId && rawSubjectId ? `${rawClassId}__${rawSubjectId}` : "",
+    rawClassId && subjectToken ? `${rawClassId}__${subjectToken}` : "",
+    classToken && rawSubjectId ? `${classToken}__${rawSubjectId}` : "",
+    classToken && subjectToken ? `${classToken}__${subjectToken}` : "",
+  ].filter(Boolean))];
+};
+
 const pickPreferredSubjectLabel = (items = []) => {
   const normalizedItems = uniqueSubjectNames(items);
   if (normalizedItems.length === 0) return "";
@@ -683,6 +697,9 @@ async function validateScoreWriteAccess({
     const assignedSubjects = Array.isArray(userScope?.assignedSubjects)
       ? userScope.assignedSubjects.map((item) => String(item ?? "").trim())
       : [];
+    const assignedSubjectClassKeys = Array.isArray(userScope?.assignedSubjectClassKeys)
+      ? userScope.assignedSubjectClassKeys.map((item) => String(item ?? "").trim()).filter(Boolean)
+      : [];
     const requiredClassToken = normalizeClassMatchToken(classId);
     const requiredSubjectToken = normalizeSubjectMatchToken(subjectId);
     const hasAssignedClass = assignedClasses.some(
@@ -691,11 +708,16 @@ async function validateScoreWriteAccess({
     const hasAssignedSubject = assignedSubjects.some(
       (item) => normalizeSubjectMatchToken(item) === requiredSubjectToken
     );
-    if (!hasAssignedClass || !hasAssignedSubject) {
+    const candidateSubjectClassKeys = buildSubjectClassMatchKeys(classId, subjectId);
+    const hasAssignedSubjectClass =
+      assignedSubjectClassKeys.length === 0 ||
+      candidateSubjectClassKeys.some((key) => assignedSubjectClassKeys.includes(key));
+    if (!hasAssignedClass || !hasAssignedSubject || !hasAssignedSubjectClass) {
       const classList = assignedClasses.join(", ") || "(none)";
       const subjectList = assignedSubjects.join(", ") || "(none)";
+      const assignmentKeyList = assignedSubjectClassKeys.join(", ") || "(none)";
       throw new Error(
-        `Assignment mismatch. Required class="${classId}", subject="${subjectId}". Assigned classes=[${classList}], subjects=[${subjectList}].`
+        `Assignment mismatch. Required class="${classId}", subject="${subjectId}". Assigned classes=[${classList}], subjects=[${subjectList}], subjectClassKeys=[${assignmentKeyList}].`
       );
     }
   }
@@ -2914,8 +2936,23 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
     const effectiveTermAlias = normalizeTermAlias(termRecord?.alias || effectiveTermId);
     const effectiveTermOrder = Number(termRecord?.sortOrder) || getTermSortOrder(effectiveTermAlias);
 
-    const normalizeStudentName = (value) =>
-      String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const formatStudentName = (value) =>
+      String(value || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase()
+        .split(" ")
+        .filter(Boolean)
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(" ");
+    const normalizeStudentName = (value) => formatStudentName(value).toLowerCase();
+    const normalizeStudentRegNumber = (value) =>
+      String(value || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toUpperCase();
+    const getStudentKey = (student, fallback) =>
+      String(student?.id || student?.studentId || fallback || "").trim() || String(fallback || "");
     const mergeRosterRows = (baseRoster = [], deltaRoster = []) => {
       const merged = new Map();
       [...(Array.isArray(baseRoster) ? baseRoster : []), ...(Array.isArray(deltaRoster) ? deltaRoster : [])].forEach(
@@ -2929,21 +2966,44 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
         String(left?.name || "").localeCompare(String(right?.name || ""))
       );
     };
-    const groupedByName = {};
-    for (const student of students || []) {
-      const normalizedName = normalizeStudentName(student?.name);
-      if (!normalizedName) continue;
-      if (!groupedByName[normalizedName]) groupedByName[normalizedName] = [];
-      groupedByName[normalizedName].push(student);
-    }
-    const hasBlockingDuplicate = Object.values(groupedByName).some((entries) => {
-      if ((entries || []).length <= 1) return false;
-      // Block duplicates only when a new row is being introduced with a conflicting name.
-      // This avoids freezing the class when legacy duplicate rows already exist.
-      return (entries || []).some((entry) => typeof entry?.id === "number");
+    const existingRoster = Array.isArray(options?.existingRoster) ? options.existingRoster : [];
+    const validationRosterMap = new Map();
+    [...existingRoster, ...(students || [])].forEach((student, index) => {
+      const key = getStudentKey(student, `student_${index}`);
+      validationRosterMap.set(key, student);
     });
-    if (hasBlockingDuplicate) {
+    const validationRoster = Array.from(validationRosterMap.entries()).map(([key, student]) => ({
+      key,
+      student,
+    }));
+    const hasBlockingNameDuplicate = (students || []).some((student, index) => {
+      const studentKey = getStudentKey(student, `incoming_name_${index}`);
+      const normalizedName = normalizeStudentName(student?.name);
+      if (!normalizedName) return false;
+      return validationRoster.some(
+        (entry) =>
+          entry.key !== studentKey &&
+          normalizeStudentName(entry?.student?.name) === normalizedName
+      );
+    });
+    if (hasBlockingNameDuplicate) {
       throw new Error("Duplicate student names are not allowed in the same class");
+    }
+    const hasBlockingRegNumberDuplicate = (students || []).some((student, index) => {
+      const studentKey = getStudentKey(student, `incoming_reg_${index}`);
+      const normalizedRegNumber = normalizeStudentRegNumber(
+        student?.regNumber || student?.regNo
+      );
+      if (!normalizedRegNumber) return false;
+      return validationRoster.some(
+        (entry) =>
+          entry.key !== studentKey &&
+          normalizeStudentRegNumber(entry?.student?.regNumber || entry?.student?.regNo) ===
+            normalizedRegNumber
+      );
+    });
+    if (hasBlockingRegNumberDuplicate) {
+      throw new Error("Duplicate registration numbers are not allowed in the same class");
     }
 
     const enrollmentByStudentId = {};
@@ -2995,8 +3055,11 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
     let batchWriteCount = 0;
 
     for (const student of students || []) {
-      const normalizedName = String(student?.name || "").replace(/\s+/g, " ").trim();
-      if (!normalizedName) continue;
+      const formattedName = formatStudentName(student?.name);
+      const normalizedRegNumber = normalizeStudentRegNumber(
+        student?.regNumber || student?.regNo
+      );
+      if (!formattedName) continue;
 
       const existingId = String(student?.id || "").trim();
       const isExistingStudent = !!existingId && typeof student?.id !== "number";
@@ -3009,8 +3072,8 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
             {
               studentId: existingId,
               schoolId,
-              name: normalizedName,
-              regNo: student.regNumber || student.regNo || "",
+              name: formattedName,
+              regNo: normalizedRegNumber,
               gender: student.sex || student.gender || "",
               sex: student.sex || student.gender || "",
               phone: student.phone || "",
@@ -3050,8 +3113,8 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
               ...student,
               studentId: existingId,
               schoolId,
-              name: normalizedName,
-              regNo: student.regNumber || student.regNo || "",
+              name: formattedName,
+              regNo: normalizedRegNumber,
               gender: student.sex || student.gender || "",
               sex: student.sex || student.gender || "",
               phone: student.phone || "",
@@ -3067,7 +3130,7 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
               entryTermOrder: effectiveTermOrder,
             }
           ),
-          name: normalizedName,
+          name: formattedName,
         });
         continue;
       }
@@ -3077,8 +3140,8 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
       batch.set(studentRef, {
         studentId: studentRef.id,
         schoolId,
-        name: normalizedName,
-        regNo: student.regNumber || student.regNo || "",
+        name: formattedName,
+        regNo: normalizedRegNumber,
         gender: student.sex || student.gender || "",
         sex: student.sex || student.gender || "",
         phone: student.phone || "",
@@ -3111,8 +3174,8 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
             ...student,
             studentId: studentRef.id,
             schoolId,
-            name: normalizedName,
-            regNo: student.regNumber || student.regNo || "",
+            name: formattedName,
+            regNo: normalizedRegNumber,
             gender: student.sex || student.gender || "",
             sex: student.sex || student.gender || "",
             phone: student.phone || "",
@@ -3128,7 +3191,7 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
             entryTermOrder: effectiveTermOrder,
           }
         ),
-        name: normalizedName,
+        name: formattedName,
       });
     }
 
@@ -3155,8 +3218,7 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
       sessionId: effectiveSessionId,
     });
 
-    const knownRoster = Array.isArray(options?.existingRoster) ? options.existingRoster : [];
-    const mergedRoster = mergeRosterRows(knownRoster, hydratedStudents);
+    const mergedRoster = mergeRosterRows(existingRoster, hydratedStudents);
     let cachePayload = mergedRoster;
     if (cachePayload.length === 0) {
       try {
@@ -3990,6 +4052,8 @@ export async function warmRecordDashboardScopeCache({
 }
 
 const RECORD_WARM_TTL_MS = 10 * 60 * 1000;
+const RECORD_WARM_FLUSH_DELAY_MS = 24;
+const RECORD_WARM_CONCURRENCY = 3;
 const recordWarmQueue = [];
 const queuedRecordWarmTokens = new Set();
 const warmedRecordScopeTimestamps = new Map();
@@ -4013,11 +4077,7 @@ const buildRecordWarmScopeToken = ({
     .join("__");
 
 const scheduleRecordWarmQueueFlush = (callback) => {
-  if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
-    window.requestIdleCallback(() => callback(), { timeout: 1500 });
-    return;
-  }
-  setTimeout(callback, 120);
+  setTimeout(callback, RECORD_WARM_FLUSH_DELAY_MS);
 };
 
 const processRecordWarmQueue = async () => {
@@ -4025,17 +4085,21 @@ const processRecordWarmQueue = async () => {
   isProcessingRecordWarmQueue = true;
   try {
     while (recordWarmQueue.length > 0) {
-      const scope = recordWarmQueue.shift();
-      const token = buildRecordWarmScopeToken(scope);
-      if (!token) continue;
-      try {
-        await warmRecordDashboardScopeCache(scope);
-        warmedRecordScopeTimestamps.set(token, Date.now());
-      } catch (error) {
-        console.warn("Record scope warm skipped:", error?.message || error);
-      } finally {
-        queuedRecordWarmTokens.delete(token);
-      }
+      const batch = recordWarmQueue.splice(0, RECORD_WARM_CONCURRENCY);
+      await Promise.all(
+        batch.map(async (scope) => {
+          const token = buildRecordWarmScopeToken(scope);
+          if (!token) return;
+          try {
+            await warmRecordDashboardScopeCache(scope);
+            warmedRecordScopeTimestamps.set(token, Date.now());
+          } catch (error) {
+            console.warn("Record scope warm skipped:", error?.message || error);
+          } finally {
+            queuedRecordWarmTokens.delete(token);
+          }
+        })
+      );
     }
   } finally {
     isProcessingRecordWarmQueue = false;
@@ -4049,7 +4113,7 @@ const processRecordWarmQueue = async () => {
 
 export function queueRecordDashboardWarmScopes(
   scopes = [],
-  { limit = Number.POSITIVE_INFINITY } = {}
+  { limit = Number.POSITIVE_INFINITY, priority = "normal" } = {}
 ) {
   const normalizedScopes = [];
   (Array.isArray(scopes) ? scopes : [scopes]).forEach((scope) => {
@@ -4069,9 +4133,16 @@ export function queueRecordDashboardWarmScopes(
     normalizedScopes.push(normalizedScope);
   });
 
-  normalizedScopes.slice(0, Math.max(0, Number(limit) || 0)).forEach((scope) => {
-    recordWarmQueue.push(scope);
-  });
+  const queuedScopes = normalizedScopes.slice(0, Math.max(0, Number(limit) || 0));
+  if (String(priority || "normal").trim().toLowerCase() === "high") {
+    for (let index = queuedScopes.length - 1; index >= 0; index -= 1) {
+      recordWarmQueue.unshift(queuedScopes[index]);
+    }
+  } else {
+    queuedScopes.forEach((scope) => {
+      recordWarmQueue.push(scope);
+    });
+  }
 
   if (recordWarmQueue.length > 0) {
     scheduleRecordWarmQueueFlush(() => {
@@ -6388,3 +6459,5 @@ export async function cleanupMalformedScores(schoolId) {
     return { removed: 0, normalized: 0 };
   }
 }
+
+

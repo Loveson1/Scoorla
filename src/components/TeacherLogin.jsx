@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { AlertCircle, School, UserSquare2, KeyRound } from "lucide-react";
+import { AlertCircle, School, UserSquare2, KeyRound, Loader2 } from "lucide-react";
 import { loginTeacherWithStaffCredentials } from "../utils/teacherAuthService";
 import { loadSchoolDirectoryRecord } from "../utils/schoolDirectoryService";
 import { logoutUser } from "../utils/authUtils";
@@ -163,8 +163,9 @@ export default function TeacherLogin() {
             <button
               type="submit"
               disabled={loading}
-              className="form-btn w-full bg-blue-800 text-white hover:bg-blue-900 disabled:opacity-60 disabled:cursor-not-allowed"
+              className="form-btn inline-flex w-full items-center justify-center gap-2 bg-blue-800 text-white hover:bg-blue-900 disabled:opacity-60 disabled:cursor-not-allowed"
             >
+              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
               {loading ? "Signing in..." : "Continue"}
             </button>
           </form>

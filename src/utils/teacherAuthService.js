@@ -1,4 +1,4 @@
-import { initializeApp, deleteApp } from "firebase/app";
+﻿import { initializeApp, deleteApp } from "firebase/app";
 import {
   getAuth,
   createUserWithEmailAndPassword,
@@ -19,7 +19,7 @@ import {
 } from "firebase/firestore";
 import { auth, firestore } from "../firebase";
 import { recomputeSchoolCounts } from "./schoolDirectoryService";
-import { ensureUserScope, setCachedUserScope } from "./userScopeCache";
+import { setCachedUserScope } from "./userScopeCache";
 
 const TEACHER_ROLES = ["class_teacher", "subject_teacher", "class_subject_teacher"];
 const CREDENTIALS_COLLECTION = "teacherCredentials";
@@ -150,6 +150,153 @@ const buildAssignedClassTokens = (items) =>
     ),
   ];
 
+const roleSupportsClassTeacher = (role) => {
+  const normalizedRole = normalizeTeacherRole(role);
+  return normalizedRole === "class_teacher" || normalizedRole === "class_subject_teacher";
+};
+
+const roleSupportsSubjectTeaching = (role) => {
+  const normalizedRole = normalizeTeacherRole(role);
+  return normalizedRole === "subject_teacher" || normalizedRole === "class_subject_teacher";
+};
+
+export const buildLegacySubjectAssignments = ({
+  assignedClasses = [],
+  assignedSubjects = [],
+} = {}) => {
+  const classIds = normalizeAssignments(assignedClasses);
+  const subjectIds = collapseAssignedSubjects(assignedSubjects);
+  if (classIds.length === 0 || subjectIds.length === 0) {
+    return [];
+  }
+  return subjectIds.map((subjectId) => ({
+    subjectId,
+    classIds: [...classIds],
+  }));
+};
+
+export const normalizeSubjectAssignments = (items = []) => {
+  if (!Array.isArray(items)) return [];
+
+  const grouped = new Map();
+
+  items.forEach((item) => {
+    const rawSubjectId =
+      typeof item === "string"
+        ? item
+        : String(item?.subjectId || item?.subject || "").trim();
+    const canonicalSubjectId = collapseAssignedSubjects([rawSubjectId])[0] || "";
+    if (!canonicalSubjectId) return;
+
+    const classIds = normalizeAssignments(
+      typeof item === "string" ? [] : item?.classIds || item?.classes
+    );
+    if (classIds.length === 0) return;
+
+    const subjectToken = normalizeSubjectAccessToken(canonicalSubjectId) || canonicalSubjectId;
+    const current = grouped.get(subjectToken) || {
+      subjectId: canonicalSubjectId,
+      classIds: [],
+    };
+
+    current.subjectId =
+      collapseAssignedSubjects([current.subjectId, canonicalSubjectId])[0] ||
+      current.subjectId ||
+      canonicalSubjectId;
+    current.classIds = normalizeAssignments([...(current.classIds || []), ...classIds]);
+    grouped.set(subjectToken, current);
+  });
+
+  return [...grouped.values()]
+    .filter((item) => item.subjectId && item.classIds.length > 0)
+    .sort((left, right) => String(left.subjectId || "").localeCompare(String(right.subjectId || "")));
+};
+
+export const buildAssignedSubjectClassKeys = (subjectAssignments = []) => {
+  const normalizedAssignments = normalizeSubjectAssignments(subjectAssignments);
+  const keys = [];
+
+  normalizedAssignments.forEach(({ subjectId, classIds = [] }) => {
+    const subjectValues = normalizeAssignments(expandAssignedSubjects([subjectId]));
+    const subjectTokens = buildAssignedSubjectTokens([subjectId]);
+    const exactClassIds = normalizeAssignments(classIds);
+    const classTokens = buildAssignedClassTokens(exactClassIds);
+
+    exactClassIds.forEach((classId) => {
+      subjectValues.forEach((subjectValue) => {
+        keys.push(`${classId}__${subjectValue}`);
+        classTokens.forEach((classToken) => {
+          keys.push(`${classToken}__${subjectValue}`);
+        });
+      });
+
+      subjectTokens.forEach((subjectToken) => {
+        keys.push(`${classId}__${subjectToken}`);
+        classTokens.forEach((classToken) => {
+          keys.push(`${classToken}__${subjectToken}`);
+        });
+      });
+    });
+  });
+
+  return [...new Set(keys)].sort();
+};
+
+export const buildTeacherAssignmentPayload = ({
+  schoolId,
+  role,
+  classTeacherClasses = [],
+  subjectAssignments = [],
+  assignedClasses = [],
+  assignedSubjects = [],
+} = {}) => {
+  const resolvedRole = normalizeTeacherRole(role);
+  const resolvedSchoolId = normalizeSchoolId(schoolId);
+  const legacyAssignedClasses = normalizeAssignments(assignedClasses);
+  const legacyAssignedSubjects = collapseAssignedSubjects(assignedSubjects);
+
+  const explicitClassTeacherClasses = normalizeAssignments(classTeacherClasses);
+  const explicitSubjectAssignments = normalizeSubjectAssignments(subjectAssignments);
+
+  const normalizedClassTeacherClasses = roleSupportsClassTeacher(resolvedRole)
+    ? explicitClassTeacherClasses.length > 0
+      ? explicitClassTeacherClasses
+      : legacyAssignedClasses
+    : [];
+
+  const normalizedSubjectAssignments = roleSupportsSubjectTeaching(resolvedRole)
+    ? explicitSubjectAssignments.length > 0
+      ? explicitSubjectAssignments
+      : buildLegacySubjectAssignments({
+          assignedClasses: legacyAssignedClasses,
+          assignedSubjects: legacyAssignedSubjects,
+        })
+    : [];
+
+  const recordClassIds = normalizeAssignments(
+    normalizedSubjectAssignments.flatMap((assignment) => assignment.classIds || [])
+  );
+  const aggregateAssignedClasses = normalizeAssignments([
+    ...normalizedClassTeacherClasses,
+    ...recordClassIds,
+  ]);
+  const aggregateAssignedSubjects = collapseAssignedSubjects(
+    normalizedSubjectAssignments.map((assignment) => assignment.subjectId)
+  );
+
+  return {
+    classTeacherClasses: normalizedClassTeacherClasses,
+    classTeacherClassTokens: buildAssignedClassTokens(normalizedClassTeacherClasses),
+    subjectAssignments: normalizedSubjectAssignments,
+    assignedClasses: aggregateAssignedClasses,
+    assignedClassTokens: buildAssignedClassTokens(aggregateAssignedClasses),
+    assignedSubjects: aggregateAssignedSubjects,
+    assignedSubjectTokens: buildAssignedSubjectTokens(aggregateAssignedSubjects),
+    assignedSubjectKeys: buildAssignedSubjectKeys(resolvedSchoolId, aggregateAssignedSubjects),
+    assignedSubjectClassKeys: buildAssignedSubjectClassKeys(normalizedSubjectAssignments),
+  };
+};
+
 const arraysMatch = (left = [], right = []) => {
   if (left.length !== right.length) return false;
   return left.every((value, index) => value === right[index]);
@@ -242,10 +389,18 @@ export const listTeachers = async (schoolId, options = {}) => {
   const teachers = snapshot.docs
     .map((item) => {
       const data = item.data() || {};
+      const assignmentPayload = buildTeacherAssignmentPayload({
+        schoolId: resolvedSchoolId,
+        role: data?.role,
+        classTeacherClasses: data?.classTeacherClasses,
+        subjectAssignments: data?.subjectAssignments,
+        assignedClasses: data?.assignedClasses,
+        assignedSubjects: data?.assignedSubjects,
+      });
       return {
         id: item.id,
         ...data,
-        assignedSubjects: collapseAssignedSubjects(data?.assignedSubjects),
+        ...assignmentPayload,
       };
     })
     .filter((item) => TEACHER_ROLES.includes(String(item?.role || "").trim().toLowerCase()))
@@ -261,6 +416,8 @@ export const createTeacher = async ({
   staffId,
   pin,
   role,
+  classTeacherClasses = [],
+  subjectAssignments = [],
   assignedClasses = [],
   assignedSubjects = [],
 } = {}) => {
@@ -321,7 +478,14 @@ export const createTeacher = async ({
 
     const batch = writeBatch(firestore);
     const userRef = doc(firestore, "users", createdUser.uid);
-    const canonicalAssignedSubjects = collapseAssignedSubjects(assignedSubjects);
+    const assignmentPayload = buildTeacherAssignmentPayload({
+      schoolId: resolvedSchoolId,
+      role: resolvedRole,
+      classTeacherClasses,
+      subjectAssignments,
+      assignedClasses,
+      assignedSubjects,
+    });
     batch.set(userRef, {
       uid: createdUser.uid,
       email,
@@ -329,11 +493,7 @@ export const createTeacher = async ({
       schoolId: resolvedSchoolId,
       staffId: resolvedStaffId,
       role: resolvedRole,
-      assignedClasses: normalizeAssignments(assignedClasses),
-      assignedClassTokens: buildAssignedClassTokens(assignedClasses),
-      assignedSubjects: canonicalAssignedSubjects,
-      assignedSubjectTokens: buildAssignedSubjectTokens(canonicalAssignedSubjects),
-      assignedSubjectKeys: buildAssignedSubjectKeys(resolvedSchoolId, canonicalAssignedSubjects),
+      ...assignmentPayload,
       isActive: true,
       authType: "teacher_staff_pin",
       createdAt: serverTimestamp(),
@@ -395,6 +555,8 @@ export const updateTeacher = async ({
   teacherUserId,
   name,
   role,
+  classTeacherClasses = [],
+  subjectAssignments = [],
   assignedClasses = [],
   assignedSubjects = [],
   isActive = true,
@@ -417,15 +579,18 @@ export const updateTeacher = async ({
   const credentialRef = doc(firestore, CREDENTIALS_COLLECTION, credentialId);
 
   const batch = writeBatch(firestore);
-  const canonicalAssignedSubjects = collapseAssignedSubjects(assignedSubjects);
+  const assignmentPayload = buildTeacherAssignmentPayload({
+    schoolId: resolvedSchoolId,
+    role: nextRole,
+    classTeacherClasses,
+    subjectAssignments,
+    assignedClasses,
+    assignedSubjects,
+  });
   batch.update(userRef, {
     name: trimmedName,
     role: nextRole,
-    assignedClasses: normalizeAssignments(assignedClasses),
-    assignedClassTokens: buildAssignedClassTokens(assignedClasses),
-    assignedSubjects: canonicalAssignedSubjects,
-    assignedSubjectTokens: buildAssignedSubjectTokens(canonicalAssignedSubjects),
-    assignedSubjectKeys: buildAssignedSubjectKeys(resolvedSchoolId, canonicalAssignedSubjects),
+    ...assignmentPayload,
     isActive: !!isActive,
     updatedAt: serverTimestamp(),
   });
@@ -571,8 +736,15 @@ export const deleteTeacher = async ({ schoolId, teacherUserId } = {}) => {
   const batch = writeBatch(firestore);
   batch.update(userRef, {
     isActive: false,
+    classTeacherClasses: [],
+    classTeacherClassTokens: [],
+    subjectAssignments: [],
     assignedClasses: [],
+    assignedClassTokens: [],
     assignedSubjects: [],
+    assignedSubjectTokens: [],
+    assignedSubjectKeys: [],
+    assignedSubjectClassKeys: [],
     deletedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
@@ -640,14 +812,12 @@ export const loginTeacherWithStaffCredentials = async ({
     throw new Error("Credential mapping mismatch. Contact your administrator.");
   }
 
-  let userData = await ensureUserScope(signedInUid, {
-    screen: "TeacherAuth",
-    action: "teacher_login_profile",
-  });
-  if (!userData) {
+  const userSnap = await getDoc(doc(firestore, "users", signedInUid));
+  if (!userSnap.exists()) {
     await signOutAuth(auth);
     throw new Error("Teacher profile not found.");
   }
+  let userData = userSnap.data() || {};
   if (
     String(userData.schoolId || "").trim().toLowerCase() !== resolvedSchoolId ||
     userData.isActive === false
@@ -655,13 +825,19 @@ export const loginTeacherWithStaffCredentials = async ({
     await signOutAuth(auth);
     throw new Error("Teacher account is not active for this school.");
   }
-  const canonicalAssignedSubjects = collapseAssignedSubjects(userData.assignedSubjects);
-  const normalizedAssignedClassTokens = buildAssignedClassTokens(userData.assignedClasses);
-  const normalizedAssignedSubjectTokens = buildAssignedSubjectTokens(canonicalAssignedSubjects);
-  const normalizedAssignedSubjectKeys = buildAssignedSubjectKeys(
-    userData.schoolId || resolvedSchoolId,
-    canonicalAssignedSubjects
-  );
+  const assignmentPayload = buildTeacherAssignmentPayload({
+    schoolId: userData.schoolId || resolvedSchoolId,
+    role: userData.role,
+    classTeacherClasses: userData.classTeacherClasses,
+    subjectAssignments: userData.subjectAssignments,
+    assignedClasses: userData.assignedClasses,
+    assignedSubjects: userData.assignedSubjects,
+  });
+  const currentManagedClasses = normalizeAssignments(userData.classTeacherClasses).sort();
+  const currentManagedClassTokens = normalizeAssignments(userData.classTeacherClassTokens)
+    .map((item) => normalizeClassAccessToken(item))
+    .filter(Boolean)
+    .sort();
   const currentAssignedClassTokens = normalizeAssignments(userData.assignedClassTokens)
     .map((item) => normalizeClassAccessToken(item))
     .filter(Boolean)
@@ -672,34 +848,58 @@ export const loginTeacherWithStaffCredentials = async ({
     .filter(Boolean)
     .sort();
   const currentAssignedSubjectKeys = normalizeAssignments(userData.assignedSubjectKeys).sort();
-  const nextAssignedSubjects = [...canonicalAssignedSubjects].sort();
-  const nextAssignedClassTokens = [...normalizedAssignedClassTokens].sort();
-  const nextAssignedSubjectTokens = [...normalizedAssignedSubjectTokens].sort();
-  const nextAssignedSubjectKeys = [...normalizedAssignedSubjectKeys].sort();
+  const currentAssignedSubjectClassKeys = normalizeAssignments(userData.assignedSubjectClassKeys).sort();
+  const currentSubjectAssignments = normalizeSubjectAssignments(userData.subjectAssignments)
+    .map((item) => JSON.stringify(item))
+    .sort();
+  const nextManagedClasses = [...assignmentPayload.classTeacherClasses].sort();
+  const nextManagedClassTokens = [...assignmentPayload.classTeacherClassTokens].sort();
+  const nextAssignedSubjects = [...assignmentPayload.assignedSubjects].sort();
+  const nextAssignedClassTokens = [...assignmentPayload.assignedClassTokens].sort();
+  const nextAssignedSubjectTokens = [...assignmentPayload.assignedSubjectTokens].sort();
+  const nextAssignedSubjectKeys = [...assignmentPayload.assignedSubjectKeys].sort();
+  const nextAssignedSubjectClassKeys = [...assignmentPayload.assignedSubjectClassKeys].sort();
+  const nextSubjectAssignments = normalizeSubjectAssignments(assignmentPayload.subjectAssignments)
+    .map((item) => JSON.stringify(item))
+    .sort();
 
   if (
+    !arraysMatch(currentManagedClasses, nextManagedClasses) ||
+    !arraysMatch(currentManagedClassTokens, nextManagedClassTokens) ||
     !arraysMatch(currentAssignedClassTokens, nextAssignedClassTokens) ||
     !arraysMatch(currentAssignedSubjects, nextAssignedSubjects) ||
     !arraysMatch(currentAssignedSubjectTokens, nextAssignedSubjectTokens) ||
-    !arraysMatch(currentAssignedSubjectKeys, nextAssignedSubjectKeys)
+    !arraysMatch(currentAssignedSubjectKeys, nextAssignedSubjectKeys) ||
+    !arraysMatch(currentAssignedSubjectClassKeys, nextAssignedSubjectClassKeys) ||
+    !arraysMatch(currentSubjectAssignments, nextSubjectAssignments)
   ) {
     await setDoc(
       doc(firestore, "users", signedInUid),
       {
+        classTeacherClasses: assignmentPayload.classTeacherClasses,
+        classTeacherClassTokens: assignmentPayload.classTeacherClassTokens,
+        subjectAssignments: assignmentPayload.subjectAssignments,
+        assignedClasses: assignmentPayload.assignedClasses,
         assignedClassTokens: nextAssignedClassTokens,
         assignedSubjects: nextAssignedSubjects,
         assignedSubjectTokens: nextAssignedSubjectTokens,
         assignedSubjectKeys: nextAssignedSubjectKeys,
+        assignedSubjectClassKeys: nextAssignedSubjectClassKeys,
         updatedAt: serverTimestamp(),
       },
       { merge: true }
     );
     userData = {
       ...userData,
+      classTeacherClasses: assignmentPayload.classTeacherClasses,
+      classTeacherClassTokens: assignmentPayload.classTeacherClassTokens,
+      subjectAssignments: assignmentPayload.subjectAssignments,
+      assignedClasses: assignmentPayload.assignedClasses,
       assignedClassTokens: nextAssignedClassTokens,
       assignedSubjects: nextAssignedSubjects,
       assignedSubjectTokens: nextAssignedSubjectTokens,
       assignedSubjectKeys: nextAssignedSubjectKeys,
+      assignedSubjectClassKeys: nextAssignedSubjectClassKeys,
     };
   }
 
@@ -728,3 +928,5 @@ export const loginTeacherWithStaffCredentials = async ({
     name: userData.name || "",
   };
 };
+
+

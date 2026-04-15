@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   canonicalizeResultSelection,
@@ -86,8 +86,7 @@ export default function RecordDashboard() {
   const {
     isAdmin,
     canRecordScores,
-    canAccessClass,
-    canAccessSubject,
+    canRecordClassSubject,
     authUser,
     schoolId,
   } = useAuthContext();
@@ -135,9 +134,9 @@ export default function RecordDashboard() {
     [isTeacherLtcTraceEnabled]
   );
 
-  const hasClassAccess = isAdmin || canAccessClass(resultSelection.class);
-  const hasSubjectAccess = isAdmin || canAccessSubject(resultSelection.subject);
-  const canEditScores = hasClassAccess && hasSubjectAccess && canRecordScores();
+  const hasRecordAccess =
+    isAdmin || canRecordClassSubject(resultSelection.class, resultSelection.subject);
+  const canEditScores = hasRecordAccess && canRecordScores();
   const resolvedTermId = selectedTermId || resultSelection.term || "term1";
   const resolvedSessionId = selectedSessionId || resultSelection.sessionId || "";
   const isLtcTerm = shouldUseLastTermCumulative(resolvedTermId);
@@ -275,7 +274,7 @@ export default function RecordDashboard() {
         }
       }
       try {
-        if (!hasClassAccess || !hasSubjectAccess) {
+        if (!hasRecordAccess) {
           if (isCurrentLoad()) {
             setStudents([]);
             setScores({});
@@ -628,8 +627,7 @@ export default function RecordDashboard() {
     selectedSessionName,
     isHistoricalView,
     isReadOnlyView,
-    hasClassAccess,
-    hasSubjectAccess,
+    hasRecordAccess,
     scoreComponents,
     isLtcTerm,
     isAdmin,
@@ -759,7 +757,7 @@ export default function RecordDashboard() {
   };
 
   const handlePreviewResult = async () => {
-    if (!hasClassAccess || !hasSubjectAccess || isPreviewSaving) return;
+    if (!hasRecordAccess || isPreviewSaving) return;
 
     try {
       setIsPreviewSaving(true);
@@ -824,7 +822,7 @@ export default function RecordDashboard() {
             </div>
           ) : null}
 
-          {!hasClassAccess || !hasSubjectAccess ? (
+          {!hasRecordAccess ? (
             <div className="mb-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 dark:border-red-700 dark:bg-red-900/20 dark:text-red-300">
               You are not assigned to this resource
             </div>
@@ -1004,8 +1002,7 @@ export default function RecordDashboard() {
             <button
               onClick={handleSaveScores}
               disabled={
-                !hasClassAccess ||
-                !hasSubjectAccess ||
+                !hasRecordAccess ||
                 isPreviewSaving ||
                 isSavingScores ||
                 !hasUnsavedChanges ||
@@ -1017,7 +1014,7 @@ export default function RecordDashboard() {
             </button>
             <button
               onClick={handlePreviewResult}
-              disabled={!hasClassAccess || !hasSubjectAccess || isPreviewSaving || isSavingScores}
+              disabled={!hasRecordAccess || isPreviewSaving || isSavingScores}
               className="rounded-lg bg-blue-800 px-8 py-2 font-semibold text-white transition-all duration-300 hover:bg-blue-900 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-blue-700 dark:hover:bg-blue-600"
             >
               {isPreviewSaving ? "Preparing..." : "Preview Result"}
@@ -1028,3 +1025,8 @@ export default function RecordDashboard() {
     </div>
   );
 }
+
+
+
+
+

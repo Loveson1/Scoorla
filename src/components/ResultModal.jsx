@@ -40,8 +40,9 @@ export default function ResultModal({ isOpen, onClose }) {
   } = useSessionContext();
   const {
     isAdmin,
-    canAccessClass,
-    canAccessSubject,
+    canRecordClassSubject,
+    getRecordClassIds,
+    getRecordSubjectsForClass,
     authUser,
     schoolId,
   } = useAuthContext();
@@ -135,24 +136,39 @@ export default function ResultModal({ isOpen, onClose }) {
               { id: "sss2", label: "SSS 2" },
               { id: "sss3", label: "SSS 3" },
             ];
+      const teacherRecordClasses = new Set(
+        (getRecordClassIds?.() || []).map((item) => String(item || "").trim())
+      );
       const filtered = isAdmin
         ? allClasses
-        : allClasses.filter((cls) => canAccessClass(cls?.id || cls));
+        : allClasses.filter((cls) =>
+            teacherRecordClasses.has(String(cls?.id || cls || "").trim())
+          );
       setClasses(filtered);
     }
-  }, [isOpen, isAdmin, canAccessClass, schoolId, schoolData]);
+  }, [getRecordClassIds, isOpen, isAdmin, schoolId, schoolData]);
 
   useEffect(() => {
     if (selectedClass && schoolId) {
       const classSubjects = getBootstrapSubjectsByClass(schoolData, selectedClass) || [];
+      const teacherSubjects = getRecordSubjectsForClass(selectedClass);
       const filteredSubjects = isAdmin
         ? classSubjects
-        : classSubjects.filter((item) => canAccessSubject(item));
+        : classSubjects.filter(
+            (item) => teacherSubjects.includes(item) && canRecordClassSubject(selectedClass, item)
+          );
       setSubjects(filteredSubjects);
     } else {
       setSubjects([]);
     }
-  }, [selectedClass, schoolId, isAdmin, canAccessSubject, schoolData]);
+  }, [
+    selectedClass,
+    schoolId,
+    getRecordSubjectsForClass,
+    isAdmin,
+    canRecordClassSubject,
+    schoolData,
+  ]);
 
   useEffect(() => {
     if (!isOpen || !selectedClass || !selectedSubject || !schoolId || !authUser?.uid) {
@@ -200,19 +216,29 @@ export default function ResultModal({ isOpen, onClose }) {
       return;
     }
 
+    const recentSelection = canonicalizeResultSelection(
+      getResultSelection(authUser.uid),
+      schoolId
+    );
+    const recentSubject = String(recentSelection?.subject || "").trim();
+
     let candidateSubjects = [];
     if (isAdmin) {
-      const recentSelection = canonicalizeResultSelection(
-        getResultSelection(authUser.uid),
-        schoolId
-      );
-      const recentSubject = String(recentSelection?.subject || "").trim();
       candidateSubjects = [
         ...(recentSelection?.class === selectedClass && recentSubject ? [recentSubject] : []),
         ...subjects.slice(0, 1),
       ];
     } else {
-      candidateSubjects = subjects;
+      candidateSubjects = [
+        ...(
+          recentSelection?.class === selectedClass &&
+          recentSubject &&
+          subjects.includes(recentSubject)
+            ? [recentSubject]
+            : []
+        ),
+        ...subjects,
+      ];
     }
 
     const scopes = [...new Set(candidateSubjects.filter(Boolean))].map((subjectId) => ({
@@ -223,7 +249,10 @@ export default function ResultModal({ isOpen, onClose }) {
       termId: resolvedTermId,
     }));
 
-    queueRecordDashboardWarmScopes(scopes, { limit: isAdmin ? 2 : 6 });
+    queueRecordDashboardWarmScopes(scopes, {
+      limit: isAdmin ? 2 : 8,
+      priority: "high",
+    });
   }, [
     activeSessionId,
     activeTermId,
@@ -242,11 +271,7 @@ export default function ResultModal({ isOpen, onClose }) {
       alert("Please select class and subject");
       return;
     }
-    if (!isAdmin && !canAccessClass(selectedClass)) {
-      alert("You are not assigned to this resource");
-      return;
-    }
-    if (!isAdmin && !canAccessSubject(selectedSubject)) {
+    if (!isAdmin && !canRecordClassSubject(selectedClass, selectedSubject)) {
       alert("You are not assigned to this resource");
       return;
     }
@@ -284,7 +309,7 @@ export default function ResultModal({ isOpen, onClose }) {
             onClick={onClose}
             className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 text-2xl leading-none"
           >
-            ×
+            &times;
           </button>
         </div>
 
@@ -358,3 +383,7 @@ export default function ResultModal({ isOpen, onClose }) {
     </div>
   );
 }
+
+
+
+

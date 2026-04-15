@@ -1,4 +1,4 @@
-/* eslint-disable react-refresh/only-export-components */
+﻿/* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { doc, onSnapshot, updateDoc } from "firebase/firestore";
@@ -14,9 +14,15 @@ import {
   normalizeSchoolStatus,
   touchSchoolLastActive,
 } from "../utils/schoolDirectoryService";
+import {
+  buildTeacherAssignmentPayload,
+  normalizeSubjectAssignments,
+} from "../utils/teacherAuthService";
 
+// Context to provide authentication and authorization state throughout the app 
 const AuthContext = createContext(null);
 
+// Helper functions to normalize and compare role and assignment data for consistent access control logic
 const normalizeRole = (rawRole) => {
   const role = String(rawRole || "")
     .trim()
@@ -52,11 +58,6 @@ const normalizeClassAccessToken = (value) =>
     .toLowerCase()
     .replace(/[\s_-]+/g, "");
 
-const sanitizeDocIdToken = (value) =>
-  encodeURIComponent(String(value || ""))
-    .replace(/%/g, "_")
-    .replace(/\./g, "_");
-
 const normalizeSubjectAccessToken = (value) => {
   const normalized = String(value || "")
     .trim()
@@ -70,93 +71,23 @@ const normalizeSubjectAccessToken = (value) => {
   return normalized.replace(/\s+/g, "_");
 };
 
-const buildSubjectCatalogDocId = (schoolId, level, subject) => {
-  const normalizedSchoolId = String(schoolId || "").trim();
-  const normalizedLevel = String(level || "").trim().toLowerCase();
-  const normalizedToken = normalizeSubjectAccessToken(subject);
-  if (!normalizedSchoolId || !normalizedLevel || !normalizedToken) {
-    return "";
-  }
-  return `${normalizedSchoolId}__${normalizedLevel}__${sanitizeDocIdToken(normalizedToken)}`;
-};
-
-const expandAssignedSubjects = (values) => {
-  const normalized = normalizeAssignments(values);
-  const expanded = [...normalized];
-  const hasBasicScienceAlias = normalized.some(
-    (item) => normalizeSubjectAccessToken(item) === "basic_science_and_technology"
-  );
-
-  normalized.forEach((item) => {
-    const andVariant = String(item || "").replace(/\s*&\s*/gi, " and ").replace(/\s+/g, " ").trim();
-    const ampVariant = String(item || "").replace(/\s+and\s+/gi, " & ").replace(/\s+/g, " ").trim();
-    if (andVariant) {
-      expanded.push(andVariant);
-    }
-    if (ampVariant) {
-      expanded.push(ampVariant);
-    }
-  });
-
-  if (hasBasicScienceAlias) {
-    if (!expanded.includes("Basic Science")) {
-      expanded.push("Basic Science");
-    }
-    if (!expanded.includes("Basic Science and Technology")) {
-      expanded.push("Basic Science and Technology");
-    }
-    if (!expanded.includes("Basic Science & Technology")) {
-      expanded.push("Basic Science & Technology");
-    }
-  }
-
-  return [...new Set(expanded)];
-};
-
-const collapseAssignedSubjects = (values) => {
-  const normalized = normalizeAssignments(values);
-  const collapsed = [];
-  let canonicalBasicScience = "";
-
-  normalized.forEach((item) => {
-    const token = normalizeSubjectAccessToken(item);
-    if (token === "basic_science_and_technology") {
-      if (!canonicalBasicScience) {
-        canonicalBasicScience = item;
-      }
-      return;
-    }
-    collapsed.push(item);
-  });
-
-  if (canonicalBasicScience) {
-    collapsed.push(canonicalBasicScience);
-  }
-
-  return [...new Set(collapsed)];
-};
-
-const buildAssignedSubjectTokens = (values) =>
-  [...new Set(
-    normalizeAssignments(values).map((item) => {
-      return normalizeSubjectAccessToken(item);
-    }).filter(Boolean)
-  )];
-
-const buildAssignedSubjectKeys = (schoolId, values) => {
-  const expandedSubjects = expandAssignedSubjects(values);
-  const exactValues = normalizeAssignments(expandedSubjects);
-  const docIds = exactValues.flatMap((subject) => {
-    const juniorId = buildSubjectCatalogDocId(schoolId, "junior", subject);
-    const seniorId = buildSubjectCatalogDocId(schoolId, "senior", subject);
-    return [juniorId, seniorId].filter(Boolean);
-  });
-  return [...new Set([...exactValues, ...docIds])].sort();
-};
-
 const arraysMatch = (left = [], right = []) => {
   if (left.length !== right.length) return false;
   return left.every((value, index) => value === right[index]);
+};
+
+const buildSubjectClassMatchKeys = (classId, subjectId) => {
+  const rawClassId = String(classId || "").trim();
+  const rawSubjectId = String(subjectId || "").trim();
+  const classToken = normalizeClassAccessToken(rawClassId);
+  const subjectToken = normalizeSubjectAccessToken(rawSubjectId);
+
+  return [...new Set([
+    rawClassId && rawSubjectId ? `${rawClassId}__${rawSubjectId}` : "",
+    rawClassId && subjectToken ? `${rawClassId}__${subjectToken}` : "",
+    classToken && rawSubjectId ? `${classToken}__${rawSubjectId}` : "",
+    classToken && subjectToken ? `${classToken}__${subjectToken}` : "",
+  ].filter(Boolean))];
 };
 
 export function AuthProvider({ children }) {
@@ -167,6 +98,15 @@ export function AuthProvider({ children }) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const previousAuthUidRef = useRef(null);
+
+
+// THE CLEANER & LIVE-SYNCER & GATEKEEPER: 
+// We need a central listener so the app can instantly react to login/logout events.
+// We need to check if user exist
+// WHY: We wipe the cache on user-switch to prevent data leaks between accounts. 
+// We use a live "onSnapshot" connection so that if an Admin changes a role, 
+// the app "heals" the UI instantly without the user needing to refresh.
+
 
   useEffect(() => {
     let unsubscribeProfile = null;
@@ -227,6 +167,7 @@ export function AuthProvider({ children }) {
       }
     );
 
+// Stop listening when this component is destroyed
     return () => {
       if (unsubscribeProfile) unsubscribeProfile();
       unsubscribeAuth();
@@ -288,40 +229,80 @@ export function AuthProvider({ children }) {
       return;
     }
 
-    const nextClassTokens = normalizeAssignments(profile?.assignedClasses)
+    const role = normalizeRole(profile?.role);
+    const isTeacherRole =
+      role === "class_teacher" ||
+      role === "subject_teacher" ||
+      role === "class_subject_teacher";
+    if (!isTeacherRole) {
+      return;
+    }
+
+    const assignmentPayload = buildTeacherAssignmentPayload({
+      schoolId: profile?.schoolId,
+      role,
+      classTeacherClasses: profile?.classTeacherClasses,
+      subjectAssignments: profile?.subjectAssignments,
+      assignedClasses: profile?.assignedClasses,
+      assignedSubjects: profile?.assignedSubjects,
+    });
+
+    const nextClassTeacherClasses = [...assignmentPayload.classTeacherClasses].sort();
+    const currentClassTeacherClasses = normalizeAssignments(profile?.classTeacherClasses).sort();
+    const nextClassTeacherClassTokens = [...assignmentPayload.classTeacherClassTokens].sort();
+    const currentClassTeacherClassTokens = normalizeAssignments(profile?.classTeacherClassTokens)
       .map((item) => normalizeClassAccessToken(item))
       .filter(Boolean)
       .sort();
+    const nextAssignedClasses = [...assignmentPayload.assignedClasses].sort();
+    const currentAssignedClasses = normalizeAssignments(profile?.assignedClasses).sort();
+    const nextClassTokens = [...assignmentPayload.assignedClassTokens].sort();
     const currentClassTokens = normalizeAssignments(profile?.assignedClassTokens)
       .map((item) => normalizeClassAccessToken(item))
       .filter(Boolean)
       .sort();
-    const nextAssignedSubjects = collapseAssignedSubjects(profile?.assignedSubjects);
-    const nextSubjectTokens = buildAssignedSubjectTokens(nextAssignedSubjects);
-    const nextSubjectKeys = buildAssignedSubjectKeys(profile?.schoolId, nextAssignedSubjects);
+    const nextAssignedSubjects = [...assignmentPayload.assignedSubjects].sort();
+    const nextSubjectTokens = [...assignmentPayload.assignedSubjectTokens].sort();
+    const nextSubjectKeys = [...assignmentPayload.assignedSubjectKeys].sort();
+    const nextSubjectClassKeys = [...assignmentPayload.assignedSubjectClassKeys].sort();
     const currentSubjectTokens = normalizeAssignments(profile?.assignedSubjectTokens)
       .map((item) => String(item || "").trim().toLowerCase())
       .filter(Boolean)
       .sort();
     const currentSubjectKeys = normalizeAssignments(profile?.assignedSubjectKeys).sort();
     const currentAssignedSubjects = normalizeAssignments(profile?.assignedSubjects).sort();
-    const normalizedNextAssignedSubjects = [...nextAssignedSubjects].sort();
-    const normalizedNextTokens = [...nextSubjectTokens].sort();
+    const currentAssignedSubjectClassKeys = normalizeAssignments(profile?.assignedSubjectClassKeys).sort();
+    const nextSubjectAssignments = normalizeSubjectAssignments(assignmentPayload.subjectAssignments)
+      .map((item) => JSON.stringify(item))
+      .sort();
+    const currentSubjectAssignments = normalizeSubjectAssignments(profile?.subjectAssignments)
+      .map((item) => JSON.stringify(item))
+      .sort();
 
     if (
+      arraysMatch(currentClassTeacherClasses, nextClassTeacherClasses) &&
+      arraysMatch(currentClassTeacherClassTokens, nextClassTeacherClassTokens) &&
+      arraysMatch(currentAssignedClasses, nextAssignedClasses) &&
       arraysMatch(currentClassTokens, nextClassTokens) &&
-      arraysMatch(currentSubjectTokens, normalizedNextTokens) &&
-      arraysMatch(currentAssignedSubjects, normalizedNextAssignedSubjects) &&
-      arraysMatch(currentSubjectKeys, nextSubjectKeys)
+      arraysMatch(currentSubjectTokens, nextSubjectTokens) &&
+      arraysMatch(currentAssignedSubjects, nextAssignedSubjects) &&
+      arraysMatch(currentSubjectKeys, nextSubjectKeys) &&
+      arraysMatch(currentAssignedSubjectClassKeys, nextSubjectClassKeys) &&
+      arraysMatch(currentSubjectAssignments, nextSubjectAssignments)
     ) {
       return;
     }
 
     updateDoc(doc(firestore, "users", authUser.uid), {
+      classTeacherClasses: nextClassTeacherClasses,
+      classTeacherClassTokens: nextClassTeacherClassTokens,
+      subjectAssignments: assignmentPayload.subjectAssignments,
+      assignedClasses: nextAssignedClasses,
       assignedClassTokens: nextClassTokens,
-      assignedSubjects: normalizedNextAssignedSubjects,
-      assignedSubjectTokens: normalizedNextTokens,
+      assignedSubjects: nextAssignedSubjects,
+      assignedSubjectTokens: nextSubjectTokens,
       assignedSubjectKeys: nextSubjectKeys,
+      assignedSubjectClassKeys: nextSubjectClassKeys,
     }).catch((tokenError) => {
       console.warn(
         "Unable to self-heal teacher assignment tokens:",
@@ -331,11 +312,16 @@ export function AuthProvider({ children }) {
   }, [
     authUser?.uid,
     profile?.schoolId,
+    profile?.role,
+    profile?.classTeacherClasses,
+    profile?.classTeacherClassTokens,
+    profile?.subjectAssignments,
     profile?.assignedClasses,
     profile?.assignedClassTokens,
     profile?.assignedSubjects,
     profile?.assignedSubjectTokens,
     profile?.assignedSubjectKeys,
+    profile?.assignedSubjectClassKeys,
   ]);
 
   useEffect(() => {
@@ -358,19 +344,39 @@ export function AuthProvider({ children }) {
     const isPlatformSuperAdmin = platformRole === "super_admin";
     const schoolStatus = normalizeSchoolStatus(schoolRecord?.status);
     const schoolDisabled = !!schoolId && isSchoolDisabledStatus(schoolStatus);
-    const assignedClasses = normalizeAssignments(profile?.assignedClasses);
-    const assignedSubjects = collapseAssignedSubjects(profile?.assignedSubjects);
-    const normalizedAssignedClasses = normalizeAssignments(profile?.assignedClassTokens).length
-      ? normalizeAssignments(profile?.assignedClassTokens).map((item) =>
-          normalizeClassAccessToken(item)
-        )
-      : assignedClasses.map((item) => normalizeClassAccessToken(item));
-    const normalizedAssignedSubjects = buildAssignedSubjectTokens(assignedSubjects);
+    const assignmentPayload = buildTeacherAssignmentPayload({
+      schoolId,
+      role,
+      classTeacherClasses: profile?.classTeacherClasses,
+      subjectAssignments: profile?.subjectAssignments,
+      assignedClasses: profile?.assignedClasses,
+      assignedSubjects: profile?.assignedSubjects,
+    });
+    const classTeacherClasses = assignmentPayload.classTeacherClasses;
+    const subjectAssignments = assignmentPayload.subjectAssignments;
+    const assignedClasses = assignmentPayload.assignedClasses;
+    const assignedSubjects = assignmentPayload.assignedSubjects;
+    const normalizedManagedClasses = [...assignmentPayload.classTeacherClassTokens];
+    const normalizedAssignedClasses = [...assignmentPayload.assignedClassTokens];
+    const normalizedAssignedSubjects = [...assignmentPayload.assignedSubjectTokens];
+    const normalizedSubjectClassKeys = normalizeAssignments(profile?.assignedSubjectClassKeys).length
+      ? normalizeAssignments(profile?.assignedSubjectClassKeys).sort()
+      : [...assignmentPayload.assignedSubjectClassKeys].sort();
+    const recordClassIds = normalizeAssignments(
+      subjectAssignments.flatMap((assignment) => assignment.classIds || [])
+    );
     const isAdmin = role === "admin";
     const isTeacher =
       role === "class_teacher" ||
       role === "subject_teacher" ||
       role === "class_subject_teacher";
+
+    const canManageClass = (classId) => {
+      if (isAdmin) return true;
+      if (!isTeacher) return false;
+      const normalizedClassId = normalizeClassAccessToken(classId);
+      return normalizedManagedClasses.includes(normalizedClassId);
+    };
 
     const canAccessClass = (classId) => {
       if (isAdmin) return true;
@@ -384,6 +390,36 @@ export function AuthProvider({ children }) {
       if (!isTeacher) return false;
       const normalizedSubjectId = normalizeSubjectAccessToken(subjectId);
       return normalizedAssignedSubjects.includes(normalizedSubjectId);
+    };
+
+    const canRecordClassSubject = (classId, subjectId) => {
+      if (isAdmin) return true;
+      if (!isTeacher) return false;
+      const candidateKeys = buildSubjectClassMatchKeys(classId, subjectId);
+      if (candidateKeys.length > 0) {
+        return candidateKeys.some((key) => normalizedSubjectClassKeys.includes(key));
+      }
+      return canAccessClass(classId) && canAccessSubject(subjectId);
+    };
+
+    const getRecordClassIds = () => {
+      if (isAdmin) return [];
+      return recordClassIds.length > 0 ? [...recordClassIds] : [...assignedClasses];
+    };
+
+    const getRecordSubjectsForClass = (classId) => {
+      if (isAdmin) return [];
+      const normalizedClassId = normalizeClassAccessToken(classId);
+      const subjectsForClass = [...new Set(
+        subjectAssignments
+          .filter((assignment) =>
+            (assignment.classIds || []).some(
+              (item) => normalizeClassAccessToken(item) === normalizedClassId
+            )
+          )
+          .map((assignment) => assignment.subjectId)
+      )];
+      return subjectsForClass.length > 0 ? subjectsForClass : [...assignedSubjects];
     };
 
     const canManageStudents = () =>
@@ -405,12 +441,18 @@ export function AuthProvider({ children }) {
       schoolRecord,
       assignedClasses,
       assignedSubjects,
+      classTeacherClasses,
+      subjectAssignments,
       isAdmin,
       isTeacher,
       isLoading,
       error,
+      canManageClass,
       canAccessClass,
       canAccessSubject,
+      canRecordClassSubject,
+      getRecordClassIds,
+      getRecordSubjectsForClass,
       canManageStudents,
       canRecordScores,
     };
@@ -426,3 +468,5 @@ export function useAuthContext() {
   }
   return context;
 }
+
+

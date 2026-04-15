@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Outlet, NavLink, useLocation, useNavigate } from "react-router-dom";
-import { Building2, LifeBuoy, LayoutDashboard, LogOut, Menu, Shield } from "lucide-react";
+import { Building2, LifeBuoy, LayoutDashboard, Loader2, LogOut, Menu, Shield } from "lucide-react";
 import { logoutUser } from "../utils/authUtils";
 
 const navItems = [
@@ -26,12 +26,15 @@ export default function PlatformLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   useEffect(() => {
     setIsSidebarOpen(false);
   }, [location.pathname]);
 
   const handleLogout = async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
     try {
       await logoutUser();
     } finally {
@@ -119,10 +122,15 @@ export default function PlatformLayout() {
             <button
               type="button"
               onClick={handleLogout}
+              disabled={isLoggingOut}
               className="flex w-full items-center gap-3 rounded-xl border border-slate-800 px-4 py-3 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-800"
             >
-              <LogOut className="h-4 w-4" />
-              <span>Logout</span>
+              {isLoggingOut ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <LogOut className="h-4 w-4" />
+              )}
+              <span>{isLoggingOut ? "Signing Out..." : "Logout"}</span>
             </button>
           </div>
         </aside>

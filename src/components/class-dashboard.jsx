@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Download, Eye, Loader2, Pencil, Trash2, UserMinus } from "lucide-react";
 import {
@@ -16,36 +17,134 @@ import { useSessionContext } from "../context/SessionContext";
 import { useAuthContext } from "../context/AuthContext";
 import { useSchoolBootstrap } from "../context/SchoolBootstrapContext";
 
+const CLASS_DASHBOARD_SELECTION_STALE_TIME = 30 * 60 * 1000;
+const CLASS_DASHBOARD_ROSTER_STALE_TIME = 5 * 60 * 1000;
+const CLASS_DASHBOARD_RESULTS_STALE_TIME = 2 * 60 * 1000;
+const CLASS_DASHBOARD_GC_TIME = 30 * 60 * 1000;
+const EMPTY_CLASS_SELECTION = Object.freeze({
+  class: "",
+  term: "term1",
+  session: "",
+  sessionId: "",
+});
+const EMPTY_STUDENTS = Object.freeze([]);
+
+const buildClassSelectionQueryKey = ({
+  userId,
+  sessionId,
+  sessionName,
+  termId,
+}) => [
+  "classDashboard",
+  "selection",
+  String(userId || "").trim() || "anonymous",
+  String(sessionId || "").trim() || "none",
+  String(sessionName || "").trim() || "none",
+  String(termId || "").trim() || "term1",
+];
+
+const resolveClassDashboardSelection = ({
+  userId,
+  sessionId,
+  sessionName,
+  termId,
+}) => {
+  const storedSelection = getClassSelection(userId);
+  return {
+    ...EMPTY_CLASS_SELECTION,
+    ...(storedSelection || {}),
+    class: String(storedSelection?.class || "").trim(),
+    sessionId: String(sessionId || storedSelection?.sessionId || "").trim(),
+    session: String(sessionName || storedSelection?.session || "").trim(),
+    term: String(termId || storedSelection?.term || "term1").trim() || "term1",
+  };
+};
+
+const buildClassRosterQueryKey = ({
+  schoolId,
+  userId,
+  classId,
+  sessionId,
+  termId,
+}) => [
+  "classDashboard",
+  "roster",
+  String(schoolId || "").trim() || "none",
+  String(userId || "").trim() || "anonymous",
+  String(classId || "").trim() || "none",
+  String(sessionId || "").trim() || "none",
+  String(termId || "").trim() || "term1",
+];
+
+const buildStudentReportRowsQueryKey = ({
+  schoolId,
+  classId,
+  studentId,
+  sessionId,
+  termId,
+}) => [
+  "classDashboard",
+  "studentReportRows",
+  String(schoolId || "").trim() || "none",
+  String(classId || "").trim() || "none",
+  String(studentId || "").trim() || "none",
+  String(sessionId || "").trim() || "none",
+  String(termId || "").trim() || "term1",
+];
 
 export default function ClassDashboard() {
   const navigate = useNavigate();
-  const { isAdmin, canManageStudents, canAccessClass, authUser, schoolId } = useAuthContext();
+  const queryClient = useQueryClient();
+  const { isAdmin, canManageStudents, canManageClass, authUser, schoolId } = useAuthContext();
   const { schoolData, adminSettings } = useSchoolBootstrap();
   const {
     selectedSessionId,
     activeSessionId,
     selectedSessionName,
     selectedTermId,
+    activeTermId,
     isHistoricalView,
     isReadOnlyView,
     isPastTermView,
   } = useSessionContext();
-  const [classSelection, setClassSelection] = useState({});
-  const [students, setStudents] = useState([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [showInactiveStudents, setShowInactiveStudents] = useState(false);
+  const [hideActiveOnlyNotice, setHideActiveOnlyNotice] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingStudent, setEditingStudent] = useState(null);
   const [isStudentSubmitting, setIsStudentSubmitting] = useState(false);
+  const [pendingStudentSyncIds, setPendingStudentSyncIds] = useState([]);
   const [downloadingStudentId, setDownloadingStudentId] = useState("");
-  const [isStudentsLoading, setIsStudentsLoading] = useState(true);
-  const [hasHydratedSelection, setHasHydratedSelection] = useState(false);
 
   const normalizeStudentName = (value) =>
     String(value || "")
       .replace(/\s+/g, " ")
       .trim()
       .toLowerCase();
+  const formatStudentName = (value) =>
+    String(value || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase()
+      .split(" ")
+      .filter(Boolean)
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ");
+  const normalizeRegNumber = (value) =>
+    String(value || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toUpperCase();
+  const isStudentSyncing = (studentId) =>
+    pendingStudentSyncIds.includes(String(studentId || "").trim());
+  const updatePendingStudentSync = (studentId, isPending) => {
+    const normalizedId = String(studentId || "").trim();
+    if (!normalizedId) return;
+    setPendingStudentSyncIds((prev) => {
+      const next = prev.filter((id) => id !== normalizedId);
+      return isPending ? [...next, normalizedId] : next;
+    });
+  };
   const getStatusMeta = (status) => {
     const normalized = String(status || "active").toLowerCase();
     if (normalized === "archived") {
@@ -96,11 +195,36 @@ export default function ClassDashboard() {
     const normalizedStatus = String(student?.status || "active").toLowerCase();
     return normalizedStatus === "withdrawn" || normalizedStatus === "graduated";
   };
-  const hasClassAccess = isAdmin || canAccessClass(classSelection.class);
+
+  const stableSelectionContext = useMemo(
+    () => ({
+      userId: String(authUser?.uid || "").trim(),
+      sessionId: String(selectedSessionId || activeSessionId || "").trim(),
+      sessionName: String(selectedSessionName || "").trim(),
+      termId: String(selectedTermId || activeTermId || "term1").trim() || "term1",
+    }),
+    [authUser?.uid, selectedSessionId, activeSessionId, selectedSessionName, selectedTermId, activeTermId]
+  );
+
+  const classSelectionQuery = useQuery({
+    queryKey: buildClassSelectionQueryKey(stableSelectionContext),
+    enabled: !!stableSelectionContext.userId,
+    queryFn: () => resolveClassDashboardSelection(stableSelectionContext),
+    staleTime: CLASS_DASHBOARD_SELECTION_STALE_TIME,
+    gcTime: CLASS_DASHBOARD_GC_TIME,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
+  });
+
+  const classSelection = classSelectionQuery.data || EMPTY_CLASS_SELECTION;
+  const hasClassAccess = isAdmin || canManageClass(classSelection.class);
   const canEditRoster = hasClassAccess && canManageStudents();
   const resolvedRosterSessionId =
-    selectedSessionId || classSelection.sessionId || activeSessionId || null;
-  const resolvedRosterTermId = selectedTermId || classSelection.term || "term1";
+    String(classSelection.sessionId || stableSelectionContext.sessionId || "").trim() || null;
+  const resolvedRosterTermId =
+    String(classSelection.term || stableSelectionContext.termId || "term1").trim() || "term1";
+
   const applyVisibleRoster = useCallback(
     (roster = []) =>
       (Array.isArray(roster) ? roster : []).filter((student) => {
@@ -114,86 +238,96 @@ export default function ClassDashboard() {
       }),
     [isHistoricalView, showInactiveStudents]
   );
-  const loadClassStudents = useCallback(async () => {
-    if (!schoolId || !classSelection.class) {
-      setStudents([]);
-      if (hasHydratedSelection) {
-        setIsStudentsLoading(false);
-      }
-      return;
-    }
-    if (!hasClassAccess) {
-      setStudents([]);
-      setIsStudentsLoading(false);
-      return;
-    }
-    setIsStudentsLoading(true);
-    try {
-      const savedStudents = await getClassStudents(schoolId, classSelection.class, {
+
+  const rosterQueryKey = useMemo(
+    () =>
+      buildClassRosterQueryKey({
+        schoolId,
+        userId: authUser?.uid,
+        classId: classSelection.class,
         sessionId: resolvedRosterSessionId,
         termId: resolvedRosterTermId,
-        includeInactive: isHistoricalView || showInactiveStudents,
-        includeDeleted: isHistoricalView || showInactiveStudents,
-      });
-      setStudents(applyVisibleRoster(savedStudents || []));
-    } catch (error) {
-      console.error("Error loading class students:", error);
-      setStudents([]);
-    } finally {
-      setIsStudentsLoading(false);
+      }),
+    [authUser?.uid, classSelection.class, resolvedRosterSessionId, resolvedRosterTermId, schoolId]
+  );
+
+  const fetchRoster = useCallback(async () => {
+    if (!schoolId || !classSelection.class || !resolvedRosterSessionId || !hasClassAccess) {
+      return [];
     }
+
+    const savedStudents = await getClassStudents(schoolId, classSelection.class, {
+      sessionId: resolvedRosterSessionId,
+      termId: resolvedRosterTermId,
+      includeInactive: true,
+      includeDeleted: true,
+    });
+
+    return Array.isArray(savedStudents) ? savedStudents : [];
   }, [
     schoolId,
     classSelection.class,
     resolvedRosterSessionId,
     resolvedRosterTermId,
-    isHistoricalView,
-    showInactiveStudents,
     hasClassAccess,
-    applyVisibleRoster,
-    hasHydratedSelection,
   ]);
 
-  useEffect(() => {
-    if (!authUser?.uid) {
-      setHasHydratedSelection(false);
-      return;
+  const rosterQuery = useQuery({
+    queryKey: rosterQueryKey,
+    enabled: !!schoolId && !!classSelection.class && !!resolvedRosterSessionId && hasClassAccess,
+    queryFn: fetchRoster,
+    staleTime: CLASS_DASHBOARD_ROSTER_STALE_TIME,
+    gcTime: CLASS_DASHBOARD_GC_TIME,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+  });
+
+  const allStudents = hasClassAccess
+    ? Array.isArray(rosterQuery.data)
+      ? rosterQuery.data
+      : EMPTY_STUDENTS
+    : EMPTY_STUDENTS;
+  const isStudentsLoading =
+    !!classSelection.class &&
+    !!resolvedRosterSessionId &&
+    hasClassAccess &&
+    !Array.isArray(rosterQuery.data) &&
+    rosterQuery.isPending;
+
+  const setAllStudents = useCallback(
+    (updater) => {
+      queryClient.setQueryData(rosterQueryKey, (current) => {
+        const currentRoster = Array.isArray(current) ? current : [];
+        const nextRoster = typeof updater === "function" ? updater(currentRoster) : updater;
+        return Array.isArray(nextRoster) ? nextRoster : [];
+      });
+    },
+    [queryClient, rosterQueryKey]
+  );
+
+  const reloadClassStudents = useCallback(async () => {
+    if (!schoolId || !classSelection.class || !resolvedRosterSessionId || !hasClassAccess) {
+      queryClient.setQueryData(rosterQueryKey, []);
+      return [];
     }
-    setClassSelection(getClassSelection(authUser.uid));
-    setHasHydratedSelection(true);
-  }, [authUser?.uid]);
 
-  useEffect(() => {
-    if (!schoolId || !classSelection.class) {
-      if (hasHydratedSelection) {
-        setIsStudentsLoading(false);
-      }
-      return;
-    }
-
-    // Load students from Firebase
-    loadClassStudents();
-  }, [classSelection.class, schoolId, loadClassStudents, hasHydratedSelection]);
-
-  useEffect(() => {
-    if (!selectedSessionId) return;
-    setClassSelection((prev) => {
-      if (!prev || !prev.class) return prev;
-      if (
-        prev.sessionId === selectedSessionId &&
-        prev.session === selectedSessionName &&
-        prev.term === selectedTermId
-      ) {
-        return prev;
-      }
-      return {
-        ...prev,
-        sessionId: selectedSessionId,
-        session: selectedSessionName || prev.session,
-        term: selectedTermId || prev.term || "term1",
-      };
+    const refreshed = await queryClient.fetchQuery({
+      queryKey: rosterQueryKey,
+      queryFn: fetchRoster,
+      staleTime: 0,
+      gcTime: CLASS_DASHBOARD_GC_TIME,
     });
-  }, [selectedSessionId, selectedSessionName, selectedTermId]);
+
+    return Array.isArray(refreshed) ? refreshed : [];
+  }, [
+    classSelection.class,
+    fetchRoster,
+    hasClassAccess,
+    queryClient,
+    resolvedRosterSessionId,
+    rosterQueryKey,
+    schoolId,
+  ]);
 
   const handleAddStudent = async (studentData) => {
     if (!authUser?.uid || !schoolId) return;
@@ -215,24 +349,35 @@ export default function ClassDashboard() {
 
     console.log("Adding student:", studentData);
     const normalizedInputName = normalizeStudentName(studentData.name);
+    const normalizedRegNumber = normalizeRegNumber(studentData.regNumber);
     if (!normalizedInputName) {
       alert("Student name is required.");
       return;
     }
 
-    const knownRoster = Array.isArray(students) ? students : [];
-    const duplicate = knownRoster.some(
+    const knownRoster = Array.isArray(allStudents) ? allStudents : [];
+    const duplicateName = knownRoster.some(
       (student) => normalizeStudentName(student?.name) === normalizedInputName
     );
-    if (duplicate) {
+    if (duplicateName) {
       alert("A student with this name already exists in this class.");
       return;
     }
-    
+    const duplicateRegNumber =
+      normalizedRegNumber &&
+      knownRoster.some(
+        (student) =>
+          normalizeRegNumber(student?.regNumber || student?.regNo) === normalizedRegNumber
+      );
+    if (duplicateRegNumber) {
+      alert("A student with this registration number already exists in this class.");
+      return;
+    }
+
     const newStudent = {
       id: Date.now(),
-      name: String(studentData.name || "").replace(/\s+/g, " ").trim(),
-      regNumber: studentData.regNumber || "",
+      name: formatStudentName(studentData.name),
+      regNumber: normalizedRegNumber,
       sex: studentData.sex || "",
       phone: studentData.phone || "",
     };
@@ -244,7 +389,7 @@ export default function ClassDashboard() {
       isDeleted: false,
     };
     setIsStudentSubmitting(true);
-    setStudents((prev) => applyVisibleRoster([...(Array.isArray(prev) ? prev : []), optimisticStudent]));
+    setAllStudents((prev) => [...(Array.isArray(prev) ? prev : []), optimisticStudent]);
     setIsAddModalOpen(false);
     setEditingStudent(null);
     try {
@@ -256,17 +401,17 @@ export default function ClassDashboard() {
         existingRoster: knownRoster,
       });
       if (Array.isArray(saveResult?.students)) {
-        setStudents(applyVisibleRoster(saveResult.students));
+        setAllStudents(saveResult.students);
       } else {
-        await loadClassStudents();
+        await reloadClassStudents();
       }
     } catch (error) {
       console.error("Error adding student:", error);
-      setStudents((prev) =>
+      setAllStudents((prev) =>
         (Array.isArray(prev) ? prev : []).filter((student) => student?.id !== optimisticStudent.id)
       );
       alert("Failed to add student: " + error.message);
-      await loadClassStudents();
+      await reloadClassStudents();
     } finally {
       setIsStudentSubmitting(false);
     }
@@ -283,20 +428,24 @@ export default function ClassDashboard() {
       return;
     }
 
-    const student = students.find((item) => item.id === studentId);
+    const normalizedStudentId = String(studentId || "").trim();
+    const student = allStudents.find(
+      (item) => String(item?.id || "").trim() === normalizedStudentId
+    );
+    if (!student) return;
     if (isReadOnlyLifecycleStudent(student)) {
       alert("Withdrawn students are read-only. Use preview/download result.");
       return;
     }
 
-    setIsStudentSubmitting(true);
+    updatePendingStudentSync(normalizedStudentId, true);
     let guard;
     try {
-      guard = await canDeleteStudentSafely(schoolId, studentId);
+      guard = await canDeleteStudentSafely(schoolId, normalizedStudentId);
     } catch (error) {
       console.error("Error checking delete safety:", error);
       alert(`Failed to validate delete safety: ${error?.message || "Unknown error"}`);
-      setIsStudentSubmitting(false);
+      updatePendingStudentSync(normalizedStudentId, false);
       return;
     }
 
@@ -305,36 +454,63 @@ export default function ClassDashboard() {
         `${guard?.reason || "Student has academic records."}\n\nMark this student as withdrawn instead?`
       );
       if (confirmWithdraw) {
-        try {
-          await withdrawStudent(schoolId, studentId);
-          await loadClassStudents();
-        } catch (error) {
-          console.error("Error withdrawing student:", error);
-          alert("Failed to withdraw student: " + error.message);
-        } finally {
-          setIsStudentSubmitting(false);
-        }
+        const withdrawnStudent = {
+          ...student,
+          status: "withdrawn",
+          isDeleted: false,
+          deletedAt: null,
+        };
+        setAllStudents((prev) =>
+          prev.map((item) =>
+            String(item?.id || "").trim() === normalizedStudentId ? withdrawnStudent : item
+          )
+        );
+        void (async () => {
+          try {
+            await withdrawStudent(schoolId, normalizedStudentId);
+          } catch (error) {
+            console.error("Error withdrawing student:", error);
+            setAllStudents((prev) =>
+              prev.map((item) =>
+                String(item?.id || "").trim() === normalizedStudentId ? student : item
+              )
+            );
+            alert("Failed to withdraw student: " + error.message);
+          } finally {
+            updatePendingStudentSync(normalizedStudentId, false);
+          }
+        })();
       } else {
-        setIsStudentSubmitting(false);
+        updatePendingStudentSync(normalizedStudentId, false);
       }
       return;
     }
 
     if (window.confirm("Are you sure you want to permanently delete this student?")) {
-      try {
-        console.log("Deleting from Firebase:", { schoolId, studentId });
-        await deleteStudentRecord(schoolId, studentId);
-        await loadClassStudents();
-      } catch (error) {
-        console.error("Error deleting student:", error);
-        alert("Failed to delete student: " + error.message);
-      } finally {
-        setIsStudentSubmitting(false);
-      }
+      setAllStudents((prev) =>
+        prev.filter((item) => String(item?.id || "").trim() !== normalizedStudentId)
+      );
+      void (async () => {
+        try {
+          console.log("Deleting from Firebase:", { schoolId, studentId: normalizedStudentId });
+          await deleteStudentRecord(schoolId, normalizedStudentId);
+        } catch (error) {
+          console.error("Error deleting student:", error);
+          setAllStudents((prev) => {
+            const alreadyRestored = prev.some(
+              (item) => String(item?.id || "").trim() === normalizedStudentId
+            );
+            return alreadyRestored ? prev : [...prev, student];
+          });
+          alert("Failed to delete student: " + error.message);
+        } finally {
+          updatePendingStudentSync(normalizedStudentId, false);
+        }
+      })();
       return;
     }
 
-    setIsStudentSubmitting(false);
+    updatePendingStudentSync(normalizedStudentId, false);
   };
 
   const handleEditStudent = (student) => {
@@ -355,14 +531,26 @@ export default function ClassDashboard() {
     setDownloadingStudentId(String(student?.id || ""));
 
     try {
-      const results = await getStudentReportRows({
-        schoolId,
-        classId: classSelection.class,
-        studentId: student.id,
-        termId: classSelection.term,
-        sessionId: classSelection.sessionId || selectedSessionId,
-        adminSettings,
-        screen: "ClassDashboard",
+      const results = await queryClient.fetchQuery({
+        queryKey: buildStudentReportRowsQueryKey({
+          schoolId,
+          classId: classSelection.class,
+          studentId: student.id,
+          termId: classSelection.term,
+          sessionId: classSelection.sessionId || selectedSessionId,
+        }),
+        queryFn: () =>
+          getStudentReportRows({
+            schoolId,
+            classId: classSelection.class,
+            studentId: student.id,
+            termId: classSelection.term,
+            sessionId: classSelection.sessionId || selectedSessionId,
+            adminSettings,
+            screen: "ClassDashboard",
+          }),
+        staleTime: CLASS_DASHBOARD_RESULTS_STALE_TIME,
+        gcTime: CLASS_DASHBOARD_GC_TIME,
       });
 
       if (!results.length) {
@@ -376,7 +564,7 @@ export default function ClassDashboard() {
         results,
         schoolData,
         adminSettings,
-        totalStudentsInClass: students.length,
+        totalStudentsInClass: visibleStudents.length,
       });
 
       if (!saved) {
@@ -412,61 +600,91 @@ export default function ClassDashboard() {
     if (!editingStudent) return;
 
     const normalizedInputName = normalizeStudentName(studentData.name);
+    const normalizedRegNumber = normalizeRegNumber(studentData.regNumber);
     if (!normalizedInputName) {
       alert("Student name is required.");
       return;
     }
 
-    const allClassStudents = await getClassStudents(schoolId, classSelection.class, {
-      sessionId: writeSessionId || classSelection.sessionId,
-      termId: resolvedRosterTermId,
-      includeInactive: true,
-      includeDeleted: true,
-    });
-    const duplicate = (allClassStudents || []).some(
+    const currentRoster = Array.isArray(allStudents) ? allStudents : [];
+    const duplicateName = currentRoster.some(
       (student) =>
-        student.id !== editingStudent.id &&
+        String(student?.id || "") !== String(editingStudent.id || "") &&
         normalizeStudentName(student?.name) === normalizedInputName
     );
-    if (duplicate) {
+    if (duplicateName) {
       alert("A student with this name already exists in this class.");
       return;
     }
-    
+    const duplicateRegNumber =
+      normalizedRegNumber &&
+      currentRoster.some(
+        (student) =>
+          String(student?.id || "") !== String(editingStudent.id || "") &&
+          normalizeRegNumber(student?.regNumber || student?.regNo) === normalizedRegNumber
+      );
+    if (duplicateRegNumber) {
+      alert("A student with this registration number already exists in this class.");
+      return;
+    }
+
+    const studentId = String(editingStudent.id || "");
+    const previousStudent =
+      currentRoster.find((student) => String(student?.id || "") === studentId) || editingStudent;
     const updatedStudent = {
       ...editingStudent,
-      name: String(studentData.name || "").replace(/\s+/g, " ").trim(),
-      regNumber: studentData.regNumber,
+      name: formatStudentName(studentData.name),
+      regNumber: normalizedRegNumber,
       sex: studentData.sex,
       phone: studentData.phone,
     };
-    setStudents((prev) =>
-      prev.map((s) => (s.id === editingStudent.id ? updatedStudent : s))
+    setAllStudents((prev) =>
+      prev.map((student) =>
+        String(student?.id || "") === studentId ? updatedStudent : student
+      )
     );
-    
-    setIsStudentSubmitting(true);
-    try {
-      const saveResult = await saveClassStudents(schoolId, classSelection.class, [updatedStudent], authUser.uid, {
-        sessionId: writeSessionId,
-        termId: resolvedRosterTermId,
-        upsertExistingStudent: true,
-        existingRoster: allClassStudents,
-      });
-      if (Array.isArray(saveResult?.students)) {
-        setStudents(applyVisibleRoster(saveResult.students));
-      } else {
-        await loadClassStudents();
+    setEditingStudent(null);
+    setIsAddModalOpen(false);
+    updatePendingStudentSync(studentId, true);
+
+    void (async () => {
+      try {
+        const saveResult = await saveClassStudents(
+          schoolId,
+          classSelection.class,
+          [updatedStudent],
+          authUser.uid,
+          {
+            sessionId: writeSessionId,
+            termId: resolvedRosterTermId,
+            upsertExistingStudent: true,
+            existingRoster: currentRoster,
+          }
+        );
+        if (Array.isArray(saveResult?.students)) {
+          const persistedStudent = saveResult.students.find(
+            (student) => String(student?.id || "") === studentId
+          );
+          if (persistedStudent) {
+            setAllStudents((prev) =>
+              prev.map((student) =>
+                String(student?.id || "") === studentId ? persistedStudent : student
+              )
+            );
+          }
+        }
+      } catch (error) {
+        console.error("Error updating student:", error);
+        setAllStudents((prev) =>
+          prev.map((student) =>
+            String(student?.id || "") === studentId ? previousStudent : student
+          )
+        );
+        alert("Failed to update student: " + error.message);
+      } finally {
+        updatePendingStudentSync(studentId, false);
       }
-      
-      setEditingStudent(null);
-      setIsAddModalOpen(false);
-    } catch (error) {
-      console.error("Error updating student:", error);
-      alert("Failed to update student: " + error.message);
-      await loadClassStudents();
-    } finally {
-      setIsStudentSubmitting(false);
-    }
+    })();
   };
 
   const handleWithdrawStudent = async (student) => {
@@ -480,23 +698,42 @@ export default function ClassDashboard() {
       return;
     }
     if (!isStudentActive(student)) return;
-    if (!window.confirm(`Withdraw ${student.name}?`)) return;
+    if (!window.confirm(`Withdraw ${formatStudentName(student.name)}?`)) return;
 
-    setIsStudentSubmitting(true);
-    try {
-      await withdrawStudent(schoolId, student.id);
-      await loadClassStudents();
-    } catch (error) {
-      console.error("Error withdrawing student:", error);
-      alert("Failed to withdraw student: " + error.message);
-    } finally {
-      setIsStudentSubmitting(false);
-    }
+    const normalizedStudentId = String(student.id || "").trim();
+    const withdrawnStudent = {
+      ...student,
+      status: "withdrawn",
+      isDeleted: false,
+      deletedAt: null,
+    };
+    updatePendingStudentSync(normalizedStudentId, true);
+    setAllStudents((prev) =>
+      prev.map((item) =>
+        String(item?.id || "").trim() === normalizedStudentId ? withdrawnStudent : item
+      )
+    );
+    void (async () => {
+      try {
+        await withdrawStudent(schoolId, normalizedStudentId);
+      } catch (error) {
+        console.error("Error withdrawing student:", error);
+        setAllStudents((prev) =>
+          prev.map((item) =>
+            String(item?.id || "").trim() === normalizedStudentId ? student : item
+          )
+        );
+        alert("Failed to withdraw student: " + error.message);
+      } finally {
+        updatePendingStudentSync(normalizedStudentId, false);
+      }
+    })();
   };
 
-  const filteredStudents = students
+  const visibleStudents = applyVisibleRoster(allStudents);
+  const filteredStudents = visibleStudents
     .filter((student) =>
-      student.name.toLowerCase().includes(searchTerm.toLowerCase()),
+      String(student?.name || "").toLowerCase().includes(searchTerm.toLowerCase()),
     )
     .sort((left, right) => {
       const leftStatus = String(left?.status || "active").toLowerCase();
@@ -508,7 +745,7 @@ export default function ClassDashboard() {
         return leftIsWithdrawn ? -1 : 1;
       }
 
-      return String(left?.name || "").localeCompare(String(right?.name || ""));
+      return formatStudentName(left?.name).localeCompare(formatStudentName(right?.name));
     });
 
   const getClassLabel = (classId) => {
@@ -547,9 +784,29 @@ export default function ClassDashboard() {
               : "This view is read-only."}
         </div>
       )}
-      {!isReadOnlyView && !showInactiveStudents && (
-        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
-          Showing active students only. Use "Show Withdrawn" to view lifecycle records.
+      {!isReadOnlyView && !showInactiveStudents && !hideActiveOnlyNotice && (
+        <div className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+          <span>Showing active students only. Use "Show Withdrawn" to view lifecycle records.</span>
+          <button
+            type="button"
+            onClick={() => setHideActiveOnlyNotice(true)}
+            aria-label="Dismiss notice"
+            className="shrink-0 rounded p-1 text-blue-700 transition-colors duration-200 hover:bg-blue-100 hover:text-blue-900 dark:text-blue-300 dark:hover:bg-blue-800/40 dark:hover:text-blue-100"
+          >
+            <svg
+              className="h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+          </button>
         </div>
       )}
       {!hasClassAccess && (
@@ -618,11 +875,11 @@ export default function ClassDashboard() {
           <h3 className="text-gray-600 dark:text-gray-300 text-sm font-semibold mb-2">
             Total Students
           </h3>
-          {isStudentsLoading ? (
+              {isStudentsLoading ? (
             <div className="h-9 w-16 animate-pulse rounded-lg bg-blue-200/70 dark:bg-gray-600" />
           ) : (
             <p className="text-3xl font-bold text-blue-800 dark:text-blue-400">
-              {students.length}
+              {visibleStudents.length}
             </p>
           )}
         </div>
@@ -763,7 +1020,7 @@ export default function ClassDashboard() {
                   <td className="px-4 md:px-6 py-4">
                     <div>
                       <p className="font-medium text-black dark:text-white">
-                        {student.name}
+                        {formatStudentName(student.name)}
                       </p>
                       <span
                         className={`inline-flex rounded px-2 py-0.5 text-[10px] font-semibold ${getStatusMeta(student.status).className}`}
@@ -774,6 +1031,12 @@ export default function ClassDashboard() {
                         <p className="text-xs text-gray-500 dark:text-gray-400">
                           Reg: {student.regNumber}
                         </p>
+                      )}
+                      {isStudentSyncing(student.id) && (
+                        <span className="mt-2 inline-flex items-center gap-1 rounded bg-blue-50 px-2 py-1 text-[10px] font-semibold text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Syncing changes...
+                        </span>
                       )}
                     </div>
                   </td>
@@ -788,10 +1051,15 @@ export default function ClassDashboard() {
                       <div className="flex flex-wrap gap-2">
                         <button
                           onClick={() => handleEditStudent(student)}
-                          disabled={isReadOnlyView || isStudentSubmitting || !canEditRoster}
+                          disabled={
+                            isReadOnlyView ||
+                            isStudentSubmitting ||
+                            isStudentSyncing(student.id) ||
+                            !canEditRoster
+                          }
                           type="button"
                           title="Edit student"
-                          aria-label={`Edit ${student.name}`}
+                          aria-label={`Edit ${formatStudentName(student.name)}`}
                           className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600 text-white transition-all duration-300 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-blue-700 dark:hover:bg-blue-600"
                         >
                           <Pencil className="h-4 w-4" />
@@ -799,10 +1067,15 @@ export default function ClassDashboard() {
                         {isStudentActive(student) && (
                           <button
                             onClick={() => handleWithdrawStudent(student)}
-                            disabled={isReadOnlyView || isStudentSubmitting || !canEditRoster}
+                            disabled={
+                              isReadOnlyView ||
+                              isStudentSubmitting ||
+                              isStudentSyncing(student.id) ||
+                              !canEditRoster
+                            }
                             type="button"
                             title="Withdraw student"
-                            aria-label={`Withdraw ${student.name}`}
+                            aria-label={`Withdraw ${formatStudentName(student.name)}`}
                             className="flex h-9 w-9 items-center justify-center rounded-lg bg-orange-600 text-white transition-all duration-300 hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-orange-700 dark:hover:bg-orange-600"
                           >
                             <UserMinus className="h-4 w-4" />
@@ -810,10 +1083,15 @@ export default function ClassDashboard() {
                         )}
                         <button
                           onClick={() => handleDeleteStudent(student.id)}
-                          disabled={isReadOnlyView || isStudentSubmitting || !canEditRoster}
+                          disabled={
+                            isReadOnlyView ||
+                            isStudentSubmitting ||
+                            isStudentSyncing(student.id) ||
+                            !canEditRoster
+                          }
                           type="button"
                           title="Delete student"
-                          aria-label={`Delete ${student.name}`}
+                          aria-label={`Delete ${formatStudentName(student.name)}`}
                           className="flex h-9 w-9 items-center justify-center rounded-lg bg-red-600 text-white transition-all duration-300 hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-red-700 dark:hover:bg-red-600"
                         >
                           <Trash2 className="h-4 w-4" />
@@ -828,7 +1106,7 @@ export default function ClassDashboard() {
                       <button
                         type="button"
                         title="Preview result"
-                        aria-label={`Preview result for ${student.name}`}
+                        aria-label={`Preview result for ${formatStudentName(student.name)}`}
                         onClick={() => {
                           sessionStorage.setItem(
                             "selectedStudent",
@@ -850,7 +1128,7 @@ export default function ClassDashboard() {
                         onClick={() => handleDownloadResult(student)}
                         disabled={downloadingStudentId === String(student.id || "")}
                         title="Download result"
-                        aria-label={`Download result for ${student.name}`}
+                        aria-label={`Download result for ${formatStudentName(student.name)}`}
                         className="flex h-9 w-9 items-center justify-center rounded-lg bg-green-600 text-white transition-all duration-300 hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-green-700 dark:hover:bg-green-600"
                       >
                         {downloadingStudentId === String(student.id || "")
@@ -865,9 +1143,13 @@ export default function ClassDashboard() {
               <tr>
                 <td colSpan="3" className="px-6 py-8 text-center">
                   <p className="text-gray-500 dark:text-gray-400">
-                    {students.length === 0
+                    {allStudents.length === 0
                       ? "No students added yet. Click 'Add Student' to get started."
-                      : "No students match your search."}
+                      : searchTerm
+                        ? "No students match your search."
+                        : !showInactiveStudents
+                          ? 'No active students found. Click "Show Withdrawn" to view lifecycle records.'
+                          : "No students match the current filters."}
                   </p>
                 </td>
               </tr>
@@ -894,3 +1176,9 @@ export default function ClassDashboard() {
     </div>
   );
 }
+
+
+
+
+
+

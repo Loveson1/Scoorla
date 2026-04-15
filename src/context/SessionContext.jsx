@@ -105,6 +105,7 @@ export const SessionProvider = ({ children }) => {
   );
   const [selectedSessionActiveTermId, setSelectedSessionActiveTermId] = useState("term1");
   const [isLoading, setIsLoading] = useState(true);
+  const [selectionReadyKey, setSelectionReadyKey] = useState("");
   const lastSelectedSessionRef = useRef(null);
   const previousSelectedSessionActiveTermRef = useRef("term1");
   const previousActiveSessionRef = useRef(null);
@@ -124,6 +125,7 @@ export const SessionProvider = ({ children }) => {
       setSelectedTermId("term1");
       setSelectedSessionTerms(buildDisplayedTerms([], "term1"));
       setSelectedSessionActiveTermId("term1");
+      setSelectionReadyKey("");
       lastSelectedSessionRef.current = null;
       previousSelectedSessionActiveTermRef.current = "term1";
       previousActiveSessionRef.current = null;
@@ -225,6 +227,7 @@ export const SessionProvider = ({ children }) => {
   useEffect(() => {
     if (!sessions.length) {
       setSelectedSessionId(null);
+      setSelectionReadyKey("");
       return;
     }
 
@@ -345,6 +348,10 @@ export const SessionProvider = ({ children }) => {
     if (!schoolId || !selectedSessionId) return;
 
     const fallbackTerm = selectedSessionActiveTermId || "term1";
+    const markSelectionReady = (termAlias) => {
+      const resolvedTermAlias = toTermAlias(termAlias) || fallbackTerm || "term1";
+      setSelectionReadyKey(`${schoolId}::${selectedSessionId}::${resolvedTermAlias}`);
+    };
     const storageKey = `${TERM_STORAGE_KEY_PREFIX}${schoolId}_${selectedSessionId}`;
     const storedTerm = toTermAlias(sessionStorage.getItem(storageKey));
     const localTerm = toTermAlias(localStorage.getItem(CURRENT_TERM_ID_KEY));
@@ -357,9 +364,11 @@ export const SessionProvider = ({ children }) => {
 
     if (sessionChanged) {
       if (!!activeSessionId && String(selectedSessionId) === String(activeSessionId)) {
-        setSelectedTermId(fallbackTerm || "term1");
+        const nextTerm = fallbackTerm || "term1";
+        setSelectedTermId(nextTerm);
         lastSelectedSessionRef.current = selectedSessionId;
         previousSelectedSessionActiveTermRef.current = fallbackTerm;
+        markSelectionReady(nextTerm);
         return;
       }
 
@@ -369,15 +378,22 @@ export const SessionProvider = ({ children }) => {
           : isSelectableStoredTerm(localTerm)
             ? localTerm
             : fallbackTerm;
-      setSelectedTermId(preferredStoredTerm || "term1");
+      const nextTerm = preferredStoredTerm || "term1";
+      setSelectedTermId(nextTerm);
       lastSelectedSessionRef.current = selectedSessionId;
       previousSelectedSessionActiveTermRef.current = fallbackTerm;
+      markSelectionReady(nextTerm);
       return;
     }
 
     if (!selectedSessionTerms.some((item) => item.alias === selectedTermId)) {
-      setSelectedTermId(fallbackTerm || "term1");
+      const nextTerm = fallbackTerm || "term1";
+      setSelectedTermId(nextTerm);
+      markSelectionReady(nextTerm);
+      return;
     }
+
+    markSelectionReady(selectedTermId || fallbackTerm || "term1");
   }, [
     schoolId,
     selectedSessionId,
@@ -401,10 +417,13 @@ export const SessionProvider = ({ children }) => {
       nextActiveTerm !== previousActiveTerm
     ) {
       setSelectedTermId(nextActiveTerm);
+      if (schoolId && selectedSessionId) {
+        setSelectionReadyKey(`${schoolId}::${selectedSessionId}::${nextActiveTerm}`);
+      }
     }
 
     previousSelectedSessionActiveTermRef.current = nextActiveTerm;
-  }, [selectedSessionActiveTermId, selectedSessionId, activeSessionId, selectedTermId]);
+  }, [selectedSessionActiveTermId, selectedSessionId, activeSessionId, selectedTermId, schoolId]);
 
   useEffect(() => {
     if (!schoolId || !selectedSessionId || !selectedTermId) return;
@@ -436,6 +455,11 @@ export const SessionProvider = ({ children }) => {
   const isReadOnlyView =
     !isSelectedSessionActive ||
     (!!selectedTermId && selectedTermId !== (selectedSessionActiveTermId || "term1"));
+  const isSelectionReady =
+    !!schoolId &&
+    !!selectedSessionId &&
+    !!selectedTermId &&
+    selectionReadyKey === `${schoolId}::${selectedSessionId}::${selectedTermId}`;
 
   const selectSession = useCallback((sessionId) => {
     setSelectedSessionId(sessionId || null);
@@ -477,6 +501,7 @@ export const SessionProvider = ({ children }) => {
         !!selectedSessionId && !!activeSessionId && selectedSessionId !== activeSessionId,
       isReadOnlyView,
       isPastTermView,
+      isSelectionReady,
       isLoading,
       selectSession,
       selectTerm,
@@ -494,6 +519,7 @@ export const SessionProvider = ({ children }) => {
       selectedTerm,
       isReadOnlyView,
       isPastTermView,
+      isSelectionReady,
       isLoading,
       selectSession,
       selectTerm,
