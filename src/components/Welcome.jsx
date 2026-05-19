@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChevronRight, X, CheckCircle, Zap, Shield, BarChart3 } from "lucide-react";
 import { isOnboardingComplete } from "../utils/onboardingUtils";
+import { getCurrentUser } from "../utils/authUtils";
 
 export default function Welcome() {
   const navigate = useNavigate();
@@ -9,7 +10,7 @@ export default function Welcome() {
 
   useEffect(() => {
     const checkOnboarding = async () => {
-      const complete = await isOnboardingComplete();
+      const complete = await isOnboardingComplete(getCurrentUser()?.uid);
       if (complete) {
         navigate("/school-dashboard", { replace: true });
       }
@@ -64,12 +65,12 @@ export default function Welcome() {
       setCurrentSlide(currentSlide + 1);
     } else {
       // Final slide completed, go to onboarding
-      navigate("/school");
+      navigate("/onboarding");
     }
   };
 
   const handleSkip = () => {
-    navigate("/school");
+    navigate("/onboarding");
   };
 
   const goToSlide = (index) => {

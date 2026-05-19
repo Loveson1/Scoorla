@@ -618,7 +618,7 @@ service cloud.firestore {
         (
           (
             request.auth.uid == userId &&
-            validRole(request.resource.data.role) &&
+            request.resource.data.role == "admin" &&
             (
               !("schoolId" in request.resource.data) ||
               request.resource.data.schoolId is string
@@ -678,12 +678,25 @@ service cloud.firestore {
           )
         );
 
-      allow delete: if false;
+      allow delete: if isSignedIn() && request.auth.uid == userId;
     }
 
     match /platformUsers/{userId} {
       allow read: if isSignedIn() && (request.auth.uid == userId || isSuperAdmin());
-      allow create, update, delete: if isSuperAdmin();
+      allow create, update: if isSuperAdmin();
+      allow delete: if isSuperAdmin() || (isSignedIn() && request.auth.uid == userId);
+    }
+
+    match /onboarding/{userId} {
+      allow delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /userOnboarding/{userId} {
+      allow delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /onboardingStatus/{userId} {
+      allow delete: if isSignedIn() && request.auth.uid == userId;
     }
 
     match /supportTickets/{ticketId} {
@@ -717,7 +730,17 @@ service cloud.firestore {
 
     match /schools/{schoolId} {
       allow read: if isSuperAdmin() || sameSchool(schoolId);
-      allow write: if isSuperAdmin() || (isAdmin() && sameSchool(schoolId));
+      allow create: if isSuperAdmin() ||
+        (isAdmin() && sameSchool(schoolId)) ||
+        (
+          isSignedIn() &&
+          request.resource.data.schoolId == schoolId &&
+          (
+            !hasUserDoc() ||
+            userSchoolId() == null
+          )
+        );
+      allow update, delete: if isSuperAdmin() || (isAdmin() && sameSchool(schoolId));
 
       match /backups/{backupId} {
         allow read: if isSuperAdmin() || (isAdmin() && sameSchool(schoolId));

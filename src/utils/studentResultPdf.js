@@ -3,6 +3,7 @@ import {
   getEnabledScoreComponents,
   isResultColumnEnabled,
 } from "../components/utils/school-data";
+import { formatScopedClassLabel } from "./departmentUtils";
 
 const BRAND = {
   ink: [30, 41, 59],
@@ -138,17 +139,8 @@ const getSchoolInitials = (name) => {
   return initials || "SCH";
 };
 
-const getStudentReportClassLabel = (classId) => {
-  const classMap = {
-    jss1: "JSS 1",
-    jss2: "JSS 2",
-    jss3: "JSS 3",
-    sss1: "SSS 1",
-    sss2: "SSS 2",
-    sss3: "SSS 3",
-  };
-  return classMap[classId] || classId;
-};
+const getStudentReportClassLabel = (classId, departmentName = "") =>
+  formatScopedClassLabel(classId, departmentName);
 
 const getStudentReportTermLabel = (termId) => {
   const termMap = {
@@ -384,7 +376,7 @@ export const downloadStudentResultPdf = async ({
       ["Student Name", student.name || "Not set"],
       ["Student Reg", student.regNumber || "N/A"],
       ["Gender", student.sex || student.gender || "N/A"],
-      ["Class", getStudentReportClassLabel(classInfo.class)],
+      ["Class", getStudentReportClassLabel(classInfo.class, classInfo.departmentName)],
     ];
     const rightItems = [
       ["Term", getStudentReportTermLabel(classInfo.term)],

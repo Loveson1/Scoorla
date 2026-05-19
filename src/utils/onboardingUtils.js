@@ -1,34 +1,31 @@
 import { getCurrentUser } from "./authUtils";
-import { setUserData, getUserData } from "./userSession";
+import { setUserData } from "./userSession";
+import { firestore } from "../firebase";
+import { doc, getDoc } from "firebase/firestore";
 
-const onboardingCacheKey = (userId) => `onboarding_complete_${userId}`;
-const schoolCacheKey = (userId) => `cached_school_id_${userId}`;
-
-const setOnboardingCache = (userId, complete, schoolId = "") => {
-  try {
-    localStorage.setItem(onboardingCacheKey(userId), complete ? "true" : "false");
-    const normalizedSchoolId = String(schoolId || "").trim();
-    if (normalizedSchoolId) {
-      localStorage.setItem(schoolCacheKey(userId), normalizedSchoolId);
-    }
-  } catch (error) {
-    console.warn("Unable to persist onboarding cache:", error?.message || error);
+const getVerifiedCurrentUser = (expectedUid = "") => {
+  const user = getCurrentUser();
+  const resolvedExpectedUid = String(expectedUid || "").trim();
+  if (!user?.uid) return null;
+  if (resolvedExpectedUid && String(user.uid || "").trim() !== resolvedExpectedUid) {
+    return null;
   }
+  return user;
 };
 
-const readOnboardingCache = (userId) => {
-  try {
-    const onboardingFlag = localStorage.getItem(onboardingCacheKey(userId)) === "true";
-    const cachedSchoolId = String(localStorage.getItem(schoolCacheKey(userId)) || "").trim();
-    return {
-      onboardingFlag,
-      cachedSchoolId,
-      isComplete: onboardingFlag || !!cachedSchoolId,
-    };
-  } catch (error) {
-    console.warn("Unable to read onboarding cache:", error?.message || error);
-    return { onboardingFlag: false, cachedSchoolId: "", isComplete: false };
+const readVerifiedUserProfile = async (uid = "") => {
+  const resolvedUid = String(uid || "").trim();
+  if (!resolvedUid) return null;
+
+  const userSnap = await getDoc(doc(firestore, "users", resolvedUid));
+  if (!userSnap.exists()) return null;
+
+  const userData = userSnap.data() || {};
+  if (String(userData?.uid || "").trim() !== resolvedUid) {
+    return null;
   }
+
+  return userData;
 };
 
 /**
@@ -38,17 +35,28 @@ const readOnboardingCache = (userId) => {
  */
 export const markOnboardingComplete = async (userId) => {
   try {
+    const user = getVerifiedCurrentUser(userId);
+    if (!user) {
+      throw new Error("Onboarding can only be completed for the current authenticated user.");
+    }
+
+    const userProfile = await readVerifiedUserProfile(user.uid);
+    const schoolId = String(userProfile?.schoolId || "").trim();
+    if (!schoolId) {
+      throw new Error("Onboarding cannot complete until this UID is linked to a school.");
+    }
     
     const onboardingData = {
       completedAt: new Date().toISOString(),
       version: 1,
+      uid: user.uid,
+      schoolId,
       onboardingCompleted: true,
     };
     
     // Store in Firestore via userSession
-    const userData = { onboarding: onboardingData };
-    await setUserData(userId, null, userData);
-    setOnboardingCache(userId, true);
+    const userData = { uid: user.uid, onboarding: onboardingData };
+    await setUserData(user.uid, null, userData);
   } catch (error) {
     console.error("Error marking onboarding complete:", error);
     throw error;
@@ -60,46 +68,23 @@ export const markOnboardingComplete = async (userId) => {
  * Checks Firebase user document
  * @returns {Promise<boolean>}
  */
-export const isOnboardingComplete = async () => {
+export const isOnboardingComplete = async (expectedUid = "") => {
   try {
-    const user = getCurrentUser();
+    const user = getVerifiedCurrentUser(expectedUid);
     
     if (!user) {
       return false;
     }
-    const cached = readOnboardingCache(user.uid);
-    const isOffline = typeof navigator !== "undefined" && navigator.onLine === false;
-    if (isOffline && cached.isComplete) {
-      return true;
-    }
 
-    const userData = await getUserData(user.uid);
+    const userData = await readVerifiedUserProfile(user.uid);
     if (!userData) {
-      return cached.isComplete;
+      return false;
     }
 
-    // Firestore migration-safe authoritative check:
-    // onboarding is complete once a schoolId is bound to the user profile.
-    if (userData.schoolId) {
-      setOnboardingCache(user.uid, true, userData.schoolId);
-      return true;
-    }
-
-    // Legacy fallback for older onboarding documents.
-    if (userData.onboarding && userData.onboarding.onboardingCompleted) {
-      setOnboardingCache(user.uid, true);
-      return true;
-    }
-
-    if (!isOffline) {
-      setOnboardingCache(user.uid, false);
-    }
-    return false;
+    return userData?.onboarding?.onboardingCompleted === true;
   } catch (error) {
     console.error("Error checking onboarding status:", error);
-    const user = getCurrentUser();
-    if (!user) return false;
-    return readOnboardingCache(user.uid).isComplete;
+    return false;
   }
 };
 
@@ -109,13 +94,13 @@ export const isOnboardingComplete = async () => {
  */
 export const getOnboardingData = async () => {
   try {
-    const user = getCurrentUser();
+    const user = getVerifiedCurrentUser();
     
     if (!user) {
       return null;
     }
 
-    const userData = await getUserData(user.uid);
+    const userData = await readVerifiedUserProfile(user.uid);
     
     if (userData && userData.onboarding) {
       return userData.onboarding;
@@ -134,10 +119,10 @@ export const getOnboardingData = async () => {
  */
 export const resetOnboarding = async () => {
   try {
-    const user = getCurrentUser();
+    const user = getVerifiedCurrentUser();
     
     if (user) {
-      await setUserData(user.uid, null, { onboarding: null });
+      await setUserData(user.uid, null, { uid: user.uid, onboarding: null });
     }
   } catch (error) {
     console.error("Error resetting onboarding:", error);

@@ -7,7 +7,7 @@ import {
   clearCachedUserScope,
   setCachedUserScope,
 } from "../utils/userScopeCache";
-import { clearAllSessionState } from "../utils/userSession";
+import { clearAllBrowserIdentityState } from "../utils/userSession";
 import { clearDataCache } from "../services/dataCache";
 import {
   isSchoolDisabledStatus,
@@ -90,14 +90,34 @@ const buildSubjectClassMatchKeys = (classId, subjectId) => {
   ].filter(Boolean))];
 };
 
+const resetIdentityState = () => {
+  clearCachedUserScope();
+  clearDataCache();
+  clearAllBrowserIdentityState();
+};
+
 export function AuthProvider({ children }) {
   const [authUser, setAuthUser] = useState(null);
   const [profile, setProfile] = useState(null);
+  const [confirmedProfile, setConfirmedProfile] = useState(null);
+  const [profileHasPendingWrites, setProfileHasPendingWrites] = useState(false);
   const [platformRecord, setPlatformRecord] = useState(null);
   const [schoolRecord, setSchoolRecord] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const previousAuthUidRef = useRef(null);
+  const authUserId = String(authUser?.uid || "").trim();
+  const profileUserId = String(profile?.uid || "").trim();
+  const isProfileSynced = !!authUserId && !!profile && profileUserId === authUserId;
+  const authoritativeProfile = useMemo(() => {
+    if (!authUserId || !profile || profileUserId !== authUserId) {
+      return null;
+    }
+    if (profileHasPendingWrites) {
+      return null;
+    }
+    return profile;
+  }, [authUserId, profile, profileHasPendingWrites, profileUserId]);
 
 
 // THE CLEANER & LIVE-SYNCER & GATEKEEPER: 
@@ -105,7 +125,7 @@ export function AuthProvider({ children }) {
 // We need to check if user exist
 // WHY: We wipe the cache on user-switch to prevent data leaks between accounts. 
 // We use a live "onSnapshot" connection so that if an Admin changes a role, 
-// the app "heals" the UI instantly without the user needing to refresh.
+// The app "heals" the UI instantly without the user needing to refresh.
 
 
   useEffect(() => {
@@ -116,9 +136,12 @@ export function AuthProvider({ children }) {
       (user) => {
         const nextUid = String(user?.uid || "").trim() || null;
         if (previousAuthUidRef.current !== nextUid) {
-          clearCachedUserScope();
-          clearDataCache();
-          clearAllSessionState();
+          resetIdentityState();
+          setProfile(null);
+          setConfirmedProfile(null);
+          setProfileHasPendingWrites(false);
+          setPlatformRecord(null);
+          setSchoolRecord(null);
         }
         previousAuthUidRef.current = nextUid;
 
@@ -128,8 +151,11 @@ export function AuthProvider({ children }) {
         }
 
         if (!user) {
+          resetIdentityState();
           setAuthUser(null);
           setProfile(null);
+          setConfirmedProfile(null);
+          setProfileHasPendingWrites(false);
           setPlatformRecord(null);
           setSchoolRecord(null);
           setError(null);
@@ -145,13 +171,34 @@ export function AuthProvider({ children }) {
         unsubscribeProfile = onSnapshot(
           userRef,
           (snapshot) => {
+            const currentAuthUid = String(auth.currentUser?.uid || "").trim();
+            if (currentAuthUid !== String(user.uid || "").trim()) {
+              return;
+            }
             const nextProfile = snapshot.exists() ? snapshot.data() : null;
-            setProfile(nextProfile);
-            setCachedUserScope(user.uid, nextProfile || {});
+            const hasPendingWrites = snapshot.metadata.hasPendingWrites === true;
+            const nextProfileUid = String(nextProfile?.uid || "").trim();
+            const profileMatchesAuth = !!nextProfile && nextProfileUid === String(user.uid || "").trim();
+            setProfile(profileMatchesAuth ? nextProfile : null);
+            setProfileHasPendingWrites(hasPendingWrites);
+            if (!hasPendingWrites) {
+              setConfirmedProfile(profileMatchesAuth ? nextProfile : null);
+              if (profileMatchesAuth) {
+                setCachedUserScope(user.uid, nextProfile);
+              } else {
+                clearCachedUserScope();
+              }
+            }
             setIsLoading(false);
           },
           (snapshotError) => {
+            const currentAuthUid = String(auth.currentUser?.uid || "").trim();
+            if (currentAuthUid !== String(user.uid || "").trim()) {
+              return;
+            }
             setProfile(null);
+            setConfirmedProfile(null);
+            setProfileHasPendingWrites(false);
             clearCachedUserScope();
             setError(snapshotError);
             setIsLoading(false);
@@ -159,8 +206,11 @@ export function AuthProvider({ children }) {
         );
       },
       (authError) => {
+        resetIdentityState();
         setAuthUser(null);
         setProfile(null);
+        setConfirmedProfile(null);
+        setProfileHasPendingWrites(false);
         clearCachedUserScope();
         setError(authError);
         setIsLoading(false);
@@ -175,6 +225,39 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => {
+    console.debug("[AuthContext] auth/profile sync", {
+      authUserUid: authUserId || null,
+      profileUid: profileUserId || null,
+      confirmedProfileUid: String(confirmedProfile?.uid || "").trim() || null,
+      profileRole: normalizeRole(profile?.role),
+      profileSchoolId: String(profile?.schoolId || "").trim() || null,
+      authoritativeRole: normalizeRole(authoritativeProfile?.role),
+      authoritativeSchoolId: String(authoritativeProfile?.schoolId || "").trim() || null,
+      isProfileSynced,
+      profileHasPendingWrites,
+    });
+  }, [
+    authUserId,
+    authoritativeProfile?.role,
+    authoritativeProfile?.schoolId,
+    confirmedProfile?.uid,
+    isProfileSynced,
+    profile?.role,
+    profile?.schoolId,
+    profileHasPendingWrites,
+    profileUserId,
+  ]);
+
+
+/*
+- We need this listener to check if platform user exist this mount or not, 
+if not we will treat the user as non-admin by setting platformRecord to null.
+- We use live snapshot so when scoorla admin changes a user's role or school, 
+the app updates immediately without needing a refresh.
+*/
+
+
+  useEffect(() => {
     if (!authUser?.uid) {
       setPlatformRecord(null);
       return;
@@ -184,7 +267,13 @@ export function AuthProvider({ children }) {
     const unsubscribePlatform = onSnapshot(
       platformRef,
       (snapshot) => {
-        setPlatformRecord(snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null);
+        const data = snapshot.exists() ? snapshot.data() || {} : null;
+        const recordUid = String(data?.uid || snapshot.id || "").trim();
+        setPlatformRecord(
+          data && recordUid === String(authUser.uid || "").trim()
+            ? { id: snapshot.id, ...data }
+            : null
+        );
       },
       (snapshotError) => {
         console.error("Error reading platform user record:", snapshotError);
@@ -195,13 +284,22 @@ export function AuthProvider({ children }) {
     return () => unsubscribePlatform();
   }, [authUser?.uid]);
 
+
+
+  /*
+  - this listener will work if user has schoolid  hence is for staff
+  - We use live snapshot so when scoorla admin changes a school's status,
+  the app updates immediately without needing a refresh.
+  */
   useEffect(() => {
-    if (!profile?.schoolId) {
+    const resolvedSchoolId = String(authoritativeProfile?.schoolId || "").trim();
+
+    if (!resolvedSchoolId) {
       setSchoolRecord(null);
       return;
     }
 
-    const schoolRef = doc(firestore, "schools", profile.schoolId);
+    const schoolRef = doc(firestore, "schools", resolvedSchoolId);
     const unsubscribeSchool = onSnapshot(
       schoolRef,
       (snapshot) => {
@@ -222,14 +320,24 @@ export function AuthProvider({ children }) {
     );
 
     return () => unsubscribeSchool();
-  }, [profile?.schoolId]);
+  }, [authUser?.uid, authoritativeProfile?.schoolId]);
 
+
+  /*
+  - this listener is used by teachers it listens to know what the teachers have been assigned , 
+  what they are allowed to do or not, it the authenticator. 
+  - it mount based on the authUser uid and profile schoolid and role
+  - iit also has a self-healing mechanism, if the teacher's 
+  assignment tokens are out of sync with their actual assignments, 
+  it will update the user record to fix the tokens. 
+  
+  */
   useEffect(() => {
-    if (!authUser?.uid || !profile?.schoolId) {
+    if (!authUser?.uid || !authoritativeProfile?.schoolId) {
       return;
     }
 
-    const role = normalizeRole(profile?.role);
+    const role = normalizeRole(authoritativeProfile?.role);
     const isTeacherRole =
       role === "class_teacher" ||
       role === "subject_teacher" ||
@@ -239,25 +347,25 @@ export function AuthProvider({ children }) {
     }
 
     const assignmentPayload = buildTeacherAssignmentPayload({
-      schoolId: profile?.schoolId,
+      schoolId: authoritativeProfile?.schoolId,
       role,
-      classTeacherClasses: profile?.classTeacherClasses,
-      subjectAssignments: profile?.subjectAssignments,
-      assignedClasses: profile?.assignedClasses,
-      assignedSubjects: profile?.assignedSubjects,
+      classTeacherClasses: authoritativeProfile?.classTeacherClasses,
+      subjectAssignments: authoritativeProfile?.subjectAssignments,
+      assignedClasses: authoritativeProfile?.assignedClasses,
+      assignedSubjects: authoritativeProfile?.assignedSubjects,
     });
 
     const nextClassTeacherClasses = [...assignmentPayload.classTeacherClasses].sort();
-    const currentClassTeacherClasses = normalizeAssignments(profile?.classTeacherClasses).sort();
+    const currentClassTeacherClasses = normalizeAssignments(authoritativeProfile?.classTeacherClasses).sort();
     const nextClassTeacherClassTokens = [...assignmentPayload.classTeacherClassTokens].sort();
-    const currentClassTeacherClassTokens = normalizeAssignments(profile?.classTeacherClassTokens)
+    const currentClassTeacherClassTokens = normalizeAssignments(authoritativeProfile?.classTeacherClassTokens)
       .map((item) => normalizeClassAccessToken(item))
       .filter(Boolean)
       .sort();
     const nextAssignedClasses = [...assignmentPayload.assignedClasses].sort();
-    const currentAssignedClasses = normalizeAssignments(profile?.assignedClasses).sort();
+    const currentAssignedClasses = normalizeAssignments(authoritativeProfile?.assignedClasses).sort();
     const nextClassTokens = [...assignmentPayload.assignedClassTokens].sort();
-    const currentClassTokens = normalizeAssignments(profile?.assignedClassTokens)
+    const currentClassTokens = normalizeAssignments(authoritativeProfile?.assignedClassTokens)
       .map((item) => normalizeClassAccessToken(item))
       .filter(Boolean)
       .sort();
@@ -265,17 +373,17 @@ export function AuthProvider({ children }) {
     const nextSubjectTokens = [...assignmentPayload.assignedSubjectTokens].sort();
     const nextSubjectKeys = [...assignmentPayload.assignedSubjectKeys].sort();
     const nextSubjectClassKeys = [...assignmentPayload.assignedSubjectClassKeys].sort();
-    const currentSubjectTokens = normalizeAssignments(profile?.assignedSubjectTokens)
+    const currentSubjectTokens = normalizeAssignments(authoritativeProfile?.assignedSubjectTokens)
       .map((item) => String(item || "").trim().toLowerCase())
       .filter(Boolean)
       .sort();
-    const currentSubjectKeys = normalizeAssignments(profile?.assignedSubjectKeys).sort();
-    const currentAssignedSubjects = normalizeAssignments(profile?.assignedSubjects).sort();
-    const currentAssignedSubjectClassKeys = normalizeAssignments(profile?.assignedSubjectClassKeys).sort();
+    const currentSubjectKeys = normalizeAssignments(authoritativeProfile?.assignedSubjectKeys).sort();
+    const currentAssignedSubjects = normalizeAssignments(authoritativeProfile?.assignedSubjects).sort();
+    const currentAssignedSubjectClassKeys = normalizeAssignments(authoritativeProfile?.assignedSubjectClassKeys).sort();
     const nextSubjectAssignments = normalizeSubjectAssignments(assignmentPayload.subjectAssignments)
       .map((item) => JSON.stringify(item))
       .sort();
-    const currentSubjectAssignments = normalizeSubjectAssignments(profile?.subjectAssignments)
+    const currentSubjectAssignments = normalizeSubjectAssignments(authoritativeProfile?.subjectAssignments)
       .map((item) => JSON.stringify(item))
       .sort();
 
@@ -311,33 +419,43 @@ export function AuthProvider({ children }) {
     });
   }, [
     authUser?.uid,
-    profile?.schoolId,
-    profile?.role,
-    profile?.classTeacherClasses,
-    profile?.classTeacherClassTokens,
-    profile?.subjectAssignments,
-    profile?.assignedClasses,
-    profile?.assignedClassTokens,
-    profile?.assignedSubjects,
-    profile?.assignedSubjectTokens,
-    profile?.assignedSubjectKeys,
-    profile?.assignedSubjectClassKeys,
+    authoritativeProfile?.schoolId,
+    authoritativeProfile?.role,
+    authoritativeProfile?.classTeacherClasses,
+    authoritativeProfile?.classTeacherClassTokens,
+    authoritativeProfile?.subjectAssignments,
+    authoritativeProfile?.assignedClasses,
+    authoritativeProfile?.assignedClassTokens,
+    authoritativeProfile?.assignedSubjects,
+    authoritativeProfile?.assignedSubjectTokens,
+    authoritativeProfile?.assignedSubjectKeys,
+    authoritativeProfile?.assignedSubjectClassKeys,
   ]);
 
+// we need this listener to update the school's last active timestamp when an admin is active,
+
   useEffect(() => {
-    if (!authUser?.uid || !profile?.schoolId || String(profile?.role || "").toLowerCase() !== "admin") {
+    const resolvedSchoolId = String(authoritativeProfile?.schoolId || "").trim();
+
+    if (!authUser?.uid || !resolvedSchoolId || String(authoritativeProfile?.role || "").toLowerCase() !== "admin") {
       return;
     }
 
-    touchSchoolLastActive(profile.schoolId).catch((touchError) => {
+    touchSchoolLastActive(resolvedSchoolId).catch((touchError) => {
       console.warn("Unable to touch school activity:", touchError?.message || touchError);
     });
-  }, [authUser?.uid, profile?.schoolId, profile?.role]);
+  }, [authUser?.uid, authoritativeProfile?.schoolId, authoritativeProfile?.role]);
+
+
+// we need this useMemo to Takes raw data from external data base and   
+// and turn them into objects and functions that the app can use 
+// to determine what the user can see and do, this is the core of the 
+// gatekeeping logic.
 
   const value = useMemo(() => {
-    const accountActive = profile?.isActive !== false;
-    const role = accountActive ? normalizeRole(profile?.role) : null;
-    const schoolId = profile?.schoolId || null;
+    const accountActive = !!authoritativeProfile && authoritativeProfile?.isActive !== false;
+    const role = accountActive ? normalizeRole(authoritativeProfile?.role) : null;
+    const schoolId = String(authoritativeProfile?.schoolId || "").trim() || null;
     const platformRole = String(platformRecord?.role || "")
       .trim()
       .toLowerCase();
@@ -347,10 +465,10 @@ export function AuthProvider({ children }) {
     const assignmentPayload = buildTeacherAssignmentPayload({
       schoolId,
       role,
-      classTeacherClasses: profile?.classTeacherClasses,
-      subjectAssignments: profile?.subjectAssignments,
-      assignedClasses: profile?.assignedClasses,
-      assignedSubjects: profile?.assignedSubjects,
+      classTeacherClasses: authoritativeProfile?.classTeacherClasses,
+      subjectAssignments: authoritativeProfile?.subjectAssignments,
+      assignedClasses: authoritativeProfile?.assignedClasses,
+      assignedSubjects: authoritativeProfile?.assignedSubjects,
     });
     const classTeacherClasses = assignmentPayload.classTeacherClasses;
     const subjectAssignments = assignmentPayload.subjectAssignments;
@@ -359,8 +477,8 @@ export function AuthProvider({ children }) {
     const normalizedManagedClasses = [...assignmentPayload.classTeacherClassTokens];
     const normalizedAssignedClasses = [...assignmentPayload.assignedClassTokens];
     const normalizedAssignedSubjects = [...assignmentPayload.assignedSubjectTokens];
-    const normalizedSubjectClassKeys = normalizeAssignments(profile?.assignedSubjectClassKeys).length
-      ? normalizeAssignments(profile?.assignedSubjectClassKeys).sort()
+    const normalizedSubjectClassKeys = normalizeAssignments(authoritativeProfile?.assignedSubjectClassKeys).length
+      ? normalizeAssignments(authoritativeProfile?.assignedSubjectClassKeys).sort()
       : [...assignmentPayload.assignedSubjectClassKeys].sort();
     const recordClassIds = normalizeAssignments(
       subjectAssignments.flatMap((assignment) => assignment.classIds || [])
@@ -430,7 +548,7 @@ export function AuthProvider({ children }) {
 
     return {
       authUser,
-      profile,
+      profile: authoritativeProfile,
       accountActive,
       role,
       platformRole,
@@ -439,6 +557,8 @@ export function AuthProvider({ children }) {
       schoolStatus,
       schoolDisabled,
       schoolRecord,
+      isProfileSynced,
+      profileHasPendingWrites,
       assignedClasses,
       assignedSubjects,
       classTeacherClasses,
@@ -456,7 +576,16 @@ export function AuthProvider({ children }) {
       canManageStudents,
       canRecordScores,
     };
-  }, [authUser, profile, platformRecord, schoolRecord, isLoading, error]);
+  }, [
+    authUser,
+    authoritativeProfile,
+    error,
+    isLoading,
+    isProfileSynced,
+    platformRecord,
+    profileHasPendingWrites,
+    schoolRecord,
+  ]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
@@ -468,5 +597,3 @@ export function useAuthContext() {
   }
   return context;
 }
-
-

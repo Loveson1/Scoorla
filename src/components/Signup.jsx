@@ -4,7 +4,7 @@ import { createUserWithEmailAndPassword } from "firebase/auth";
 import { Eye, EyeOff, Loader } from "lucide-react";
 import { auth, firestore } from "../firebase";
 import { sendVerificationEmail } from "../utils/authUtils";
-import { doc, setDoc } from "firebase/firestore";
+import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 
 export default function Signup() {
   const navigate = useNavigate();
@@ -18,6 +18,12 @@ export default function Signup() {
     password: "",
     confirmPassword: "",
   });
+  const normalizeSchoolId = (value) =>
+    String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9-]/g, "");
 
   // Validation functions
   const validateEmail = (email) => {
@@ -92,23 +98,26 @@ export default function Signup() {
         form.email,
         form.password
       );
+      const schoolSlug = normalizeSchoolId(form.schoolName);
+      if (!schoolSlug) {
+        setError("School name must contain valid letters or numbers.");
+        setLoading(false);
+        return;
+      }
 
       // Create user document in Firestore
       await setDoc(doc(firestore, "users", userCredential.user.uid), {
         uid: userCredential.user.uid,
         email: form.email,
-        role: 'admin',  // Set admin role for school creation
-        createdAt: new Date().toISOString(),
-        // schoolId will be set later during onboarding
+        role: "admin",
+        isActive: true,
+        isOnline: true,
+        pendingSchoolName: form.schoolName.trim(),
+        createdAt: serverTimestamp(),
       });
 
       // Send email verification
       await sendVerificationEmail();
-
-      // Store school name in localStorage for onboarding
-      localStorage.setItem("newSchoolName", form.schoolName);
-      localStorage.setItem("userId", userCredential.user.uid);
-      localStorage.setItem("userEmail", userCredential.user.email);
 
       // Reset form
       setForm({

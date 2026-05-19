@@ -17,7 +17,7 @@ import {
   signOut,
   updateProfile,
 } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
+import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { ensureUserScope } from "./userScopeCache";
 
 /**
@@ -44,7 +44,7 @@ export const registerAdmin = async (email, password, schoolId, displayName) => {
       displayName,
       role: "admin",
       schoolId,
-      createdAt: new Date().toISOString(),
+      createdAt: serverTimestamp(),
       isActive: true,
     });
 

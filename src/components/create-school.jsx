@@ -1,15 +1,59 @@
-import { useState, useRef, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { saveSchoolData } from "./utils/school-data";
 import { initializeSchoolAcademicCycle } from "../utils/firestoreService";
-import { markOnboardingComplete, isOnboardingComplete } from "../utils/onboardingUtils";
-import { getCurrentUser, setUserRole } from "../utils/authUtils";
+import { markOnboardingComplete } from "../utils/onboardingUtils";
+import { getCurrentUser } from "../utils/authUtils";
 import { firestore } from "../firebase";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { Loader } from "lucide-react";
+import { useAuthContext } from "../context/AuthContext";
+
+const waitForOnboardingConfirmation = (uid, timeoutMs = 10000) =>
+  new Promise((resolve, reject) => {
+    const resolvedUid = String(uid || "").trim();
+    if (!resolvedUid) {
+      reject(new Error("User UID is required to confirm onboarding."));
+      return;
+    }
+
+    let unsubscribe = null;
+    const timeoutId = setTimeout(() => {
+      if (unsubscribe) unsubscribe();
+      reject(new Error("Timed out waiting for onboarding confirmation."));
+    }, timeoutMs);
+
+    unsubscribe = onSnapshot(
+      doc(firestore, "users", resolvedUid),
+      { includeMetadataChanges: true },
+      (snapshot) => {
+        if (!snapshot.exists() || snapshot.metadata.hasPendingWrites) return;
+        const data = snapshot.data() || {};
+        const profileMatchesAuth = String(data?.uid || "").trim() === resolvedUid;
+        const complete = data?.onboarding?.onboardingCompleted === true;
+        if (profileMatchesAuth && complete) {
+          clearTimeout(timeoutId);
+          if (unsubscribe) unsubscribe();
+          resolve(data);
+        }
+      },
+      (error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      }
+    );
+  });
 
 export default function School() {
+
+
+
   const navigate = useNavigate();
+  const {
+    profile,
+    isProfileSynced,
+    profileHasPendingWrites,
+  } = useAuthContext();
   const [logoPreview, setLogopreview] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errors, setErrors] = useState({});
@@ -26,34 +70,71 @@ export default function School() {
 
   const schoolLogoRef = useRef(null);
   const normalizeWhitespace = (value) => String(value || "").replace(/\s+/g, " ").trim();
+  const buildSchoolSlug = (value) =>
+    normalizeWhitespace(value)
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9-]/g, "");
+  const buildUidScopedSchoolId = (schoolName, userId) => {
+    const slug = buildSchoolSlug(schoolName);
+    const uidSuffix = String(userId || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "")
+      .slice(0, 8);
+    return slug && uidSuffix ? `${slug}-${uidSuffix}` : slug;
+  };
+  const isPermissionDeniedError = (error) =>
+    String(error?.code || "").toLowerCase().includes("permission-denied");
+  const attachStageToError = (error, stage) => {
+    if (error && typeof error === "object") {
+      error.stage = stage;
+    }
+    return error;
+  };
+  const isAcademicCycleReady = (settingsData = {}) => {
+    const activeSessionId = String(settingsData?.activeSessionId || "").trim();
+    const activeTermId = String(settingsData?.activeTermId || "").trim();
+    const activeTermDocId = String(settingsData?.activeTermDocId || "").trim();
+    return !!activeSessionId && (!!activeTermId || !!activeTermDocId);
+  };
+  const readUserProfile = async (userId) => {
+    try {
+      const userSnap = await getDoc(doc(firestore, "users", userId));
+      if (!userSnap.exists()) return null;
+      const userData = userSnap.data() || {};
+      return String(userData?.uid || "").trim() === String(userId || "").trim()
+        ? userData
+        : null;
+    } catch {
+      return null;
+    }
+  };
+  const readSchoolBootstrapState = async (schoolId) => {
+    try {
+      const [schoolSnap, settingsSnap] = await Promise.all([
+        getDoc(doc(firestore, "schools", schoolId)),
+        getDoc(doc(firestore, "settings", schoolId)),
+      ]);
+      return {
+        school: schoolSnap.exists() ? schoolSnap.data() || {} : null,
+        settings: settingsSnap.exists() ? settingsSnap.data() || {} : null,
+      };
+    } catch {
+      return {
+        school: null,
+        settings: null,
+      };
+    }
+  };
 
   // Check if onboarding is already completed, if so redirect
   useEffect(() => {
-    const checkOnboarding = async () => {
-      const isComplete = await isOnboardingComplete();
-      if (isComplete) {
-        // Check if user has a schoolId (proves they actually completed onboarding)
-        const user = getCurrentUser();
-        if (user) {
-          const userDocRef = firestore && doc(firestore, "users", user.uid);
-          if (userDocRef) {
-            try {
-              const userSnap = await getDoc(userDocRef);
-              if (userSnap.exists() && userSnap.data().schoolId) {
-                // They have completed onboarding with a school, redirect to dashboard
-                navigate("/school-dashboard", { replace: true });
-              }
-              // If no schoolId, allow them to continue creating school
-            } catch (err) {
-              console.error("Error checking user data:", err);
-            }
-          }
-        }
-      }
-    };
-    
-    checkOnboarding();
-  }, [navigate]);
+    if (!isProfileSynced || profileHasPendingWrites) return;
+    if (profile?.onboarding?.onboardingCompleted === true) {
+      navigate("/school-dashboard", { replace: true });
+    }
+  }, [isProfileSynced, navigate, profile, profileHasPendingWrites]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -208,12 +289,13 @@ export default function School() {
         return;
       }
 
-      // Generate slug-format schoolId from school name (lowercase, no spaces, dashes)
-      const schoolId = sanitizedForm.name
-        .trim()
-        .toLowerCase()
-        .replace(/\s+/g, '-')
-        .replace(/[^a-z0-9-]/g, '');
+      const existingUserProfile = await readUserProfile(currentUser.uid);
+      const existingProfileUid = String(existingUserProfile?.uid || "").trim();
+      const existingBoundSchoolId = String(existingUserProfile?.schoolId || "").trim();
+      const existingRole = String(existingUserProfile?.role || "").trim().toLowerCase();
+
+      const derivedSchoolId = buildUidScopedSchoolId(sanitizedForm.name, currentUser.uid);
+      const schoolId = existingBoundSchoolId || derivedSchoolId;
       
       if (!schoolId) {
         setErrors({ submit: "Error: School name must contain valid characters" });
@@ -222,20 +304,72 @@ export default function School() {
       }
 
       // School onboarding must always bind the creator as admin for this school.
-      await setUserRole(currentUser.uid, "admin", schoolId);
+      const hasBoundAdminProfile =
+        existingProfileUid === currentUser.uid &&
+        existingBoundSchoolId &&
+        existingBoundSchoolId === schoolId &&
+        existingRole === "admin";
+      if (!hasBoundAdminProfile) {
+        try {
+          await setDoc(
+            doc(firestore, "users", currentUser.uid),
+            {
+              uid: currentUser.uid,
+              email: currentUser.email || "",
+              role: "admin",
+              schoolId,
+              isActive: true,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        } catch (bindingError) {
+          const refreshedUserProfile = await readUserProfile(currentUser.uid);
+          const existingSchoolId = String(refreshedUserProfile?.schoolId || "").trim();
+          const refreshedRole = String(refreshedUserProfile?.role || "").trim().toLowerCase();
+          if (!(existingSchoolId === schoolId && refreshedRole === "admin")) {
+            throw attachStageToError(bindingError, "bind_school");
+          }
+        }
+      }
 
       // Save school profile after admin/school binding has been established.
-      await saveSchoolData(sanitizedForm, currentUser.uid, schoolId);
+      try {
+        await saveSchoolData(sanitizedForm, currentUser.uid, schoolId);
+      } catch (schoolSaveError) {
+        const existingSchoolState = await readSchoolBootstrapState(schoolId);
+        const existingSchoolName = normalizeWhitespace(existingSchoolState?.school?.name);
+        if (
+          !(
+            isPermissionDeniedError(schoolSaveError) &&
+            existingSchoolName &&
+            existingSchoolName.toLowerCase() === sanitizedForm.name.toLowerCase()
+          )
+        ) {
+          throw attachStageToError(schoolSaveError, "school_profile");
+        }
+      }
 
       // Create the first academic session + current term for the school.
-      await initializeSchoolAcademicCycle({
-        schoolId,
-        initialSessionName: sanitizedForm.startingSessionName,
-        initialTermAlias: sanitizedForm.startingTermAlias,
-      });
+      const existingSchoolState = await readSchoolBootstrapState(schoolId);
+      if (!isAcademicCycleReady(existingSchoolState?.settings)) {
+        try {
+          await initializeSchoolAcademicCycle({
+            schoolId,
+            initialSessionName: sanitizedForm.startingSessionName,
+            initialTermAlias: sanitizedForm.startingTermAlias,
+          });
+        } catch (cycleError) {
+          const fallbackSchoolState = await readSchoolBootstrapState(schoolId);
+          if (!isAcademicCycleReady(fallbackSchoolState?.settings)) {
+            throw attachStageToError(cycleError, "academic_cycle");
+          }
+        }
+      }
 
-      // Mark onboarding complete
       await markOnboardingComplete(currentUser.uid);
+      await waitForOnboardingConfirmation(currentUser.uid);
 
       // Reset form
       setForm({
@@ -260,8 +394,18 @@ export default function School() {
       console.error("Error saving school:", error);
       const code = String(error?.code || "");
       if (code.includes("permission-denied")) {
+        const stage = String(error?.stage || "").trim();
+        const stageMessageMap = {
+          bind_school:
+            "Permission denied while linking your admin account to the new school.",
+          school_profile:
+            "Permission denied while creating the school profile.",
+          academic_cycle:
+            "Permission denied while creating the first academic session and term.",
+        };
         setErrors({
           submit:
+            stageMessageMap[stage] ||
             "Permission denied while saving school. Verify Firestore rules allow first-time admin school binding.",
         });
       } else {

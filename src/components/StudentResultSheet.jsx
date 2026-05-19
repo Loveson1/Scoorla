@@ -4,7 +4,7 @@ import { downloadStudentResultPdf } from "../utils/studentResultPdf";
 import {
   formatGradingScaleLegend,
   getClassSelection,
-  getClassStudents,
+  getDepartmentAwareClassStudents,
   getEnabledScoreComponents,
   getStudentReportRows,
   isResultColumnEnabled,
@@ -12,6 +12,10 @@ import {
 } from "./utils/school-data";
 import { useAuthContext } from "../context/AuthContext";
 import { useSchoolBootstrap } from "../context/SchoolBootstrapContext";
+import {
+  buildClassDashboardPath,
+  formatScopedClassLabel,
+} from "../utils/departmentUtils";
 
 const formatPdfLine = (value, fallback = "Not provided") => {
   const normalized = String(value || "").trim();
@@ -29,17 +33,8 @@ const getSchoolInitials = (name) => {
   return initials || "SCH";
 };
 
-const getClassLabel = (classId) => {
-  const classMap = {
-    jss1: "JSS 1",
-    jss2: "JSS 2",
-    jss3: "JSS 3",
-    sss1: "SSS 1",
-    sss2: "SSS 2",
-    sss3: "SSS 3",
-  };
-  return classMap[classId] || classId || "Not set";
-};
+const getClassLabel = (classId, departmentName = "") =>
+  formatScopedClassLabel(classId || "Not set", departmentName);
 
 const getTermLabel = (termId) => {
   const termMap = {
@@ -118,6 +113,7 @@ export default function StudentResultSheet() {
           schoolId: resolvedSchoolId,
           classId: classInfo.class,
           studentId: parsedStudent.id,
+          departmentId: classInfo.departmentId || parsedStudent.departmentId || "",
           termId: classInfo.term,
           sessionId: classInfo.sessionId || classInfo.session,
           adminSettings: activeSettings,
@@ -153,9 +149,11 @@ export default function StudentResultSheet() {
       if (!resolvedSchoolId) return;
 
       try {
-        const students = await getClassStudents(resolvedSchoolId, classData.class, {
+        const students = await getDepartmentAwareClassStudents(resolvedSchoolId, classData.class, {
           sessionId: classData.sessionId || classData.session,
           termId: classData.term,
+          departmentId: classData.departmentId || "",
+          classStructure: adminSettings?.classStructure || {},
         });
         setTotalStudentsInClass(Array.isArray(students) ? students.length : 0);
       } catch (error) {
@@ -165,7 +163,7 @@ export default function StudentResultSheet() {
     };
 
     loadClassSize();
-  }, [classData, schoolId]);
+  }, [adminSettings?.classStructure, classData, schoolId]);
 
   const isFirstTerm = useMemo(
     () => classData?.term === "term1" || classData?.term === "1st",
@@ -357,7 +355,13 @@ export default function StudentResultSheet() {
         <button
           onClick={() => {
             sessionStorage.removeItem("selectedStudent");
-            navigate("/class-dashboard");
+            navigate(
+              buildClassDashboardPath({
+                classId: classData.class,
+                departmentId: classData.departmentId || studentData.departmentId || "",
+                classStructure: adminSettings?.classStructure || {},
+              })
+            );
           }}
           className="px-8 py-2 border-2 border-gray-300 dark:border-gray-600 text-black dark:text-black font-semibold rounded-lg hover:bg-gray-100 dark:hover:bg-gray-100 transition-all duration-300"
         >
@@ -485,7 +489,10 @@ export default function StudentResultSheet() {
                   Class
                 </p>
                 <p className="mt-2 text-base font-semibold text-slate-900 md:text-lg">
-                  {getClassLabel(classData.class)}
+                  {getClassLabel(
+                    classData.class,
+                    classData.departmentName || studentData.departmentName || ""
+                  )}
                 </p>
               </div>
               <div className="rounded-2xl border border-blue-100 bg-blue-50/60 px-4 py-3">

@@ -61,7 +61,6 @@ const EMPTY_DASHBOARD_STATS = Object.freeze({
   classBreakdown: {},
   termBreakdown: {},
 });
-
 const fetchSchoolDashboardStats = async ({ queryKey }) => {
   const [, schoolId, sessionId, userId] = queryKey;
   if (!schoolId || schoolId === "none" || !userId || userId === "anonymous") {
@@ -213,6 +212,10 @@ export default function SchoolDashboard() {
   );
   const isStatsLoading =
     !isBootstrapLoading && isDashboardStatsPending && !dashboardStatsData;
+  const isAwaitingAuthoritativeSchoolBinding =
+    !isBootstrapLoading &&
+    !stableAuth.schoolId &&
+    !!stableAuth.authUserId;
 
   const handleOpenClassModal = useCallback(() => {
     setIsClassModalOpen(true);
@@ -537,7 +540,7 @@ export default function SchoolDashboard() {
 
   return (
     <div className="min-h-screen bg-white dark:bg-gray-900 p-6 md:p-10">
-      {(isBootstrapLoading || isStatsLoading) && (
+      {(isBootstrapLoading || isStatsLoading || isAwaitingAuthoritativeSchoolBinding) && (
         <div className="flex items-center justify-center min-h-screen">
           <div className="text-center">
             <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-800"></div>
@@ -546,7 +549,7 @@ export default function SchoolDashboard() {
         </div>
       )}
 
-      {!(isBootstrapLoading || isStatsLoading) && (
+      {!(isBootstrapLoading || isStatsLoading || isAwaitingAuthoritativeSchoolBinding) && (
         <>
       {/* Header Section */}
       <div className="flex flex-col md:flex-row items-center justify-between gap-6 mb-10">

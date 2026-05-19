@@ -82,11 +82,13 @@ export const buildUserScopeRecord = (uid, data = {}) => ({
 });
 
 export const setCachedUserScope = (uid, data = {}) => {
-  const nextScope = buildUserScopeRecord(uid, data);
-  if (!nextScope.uid) {
+  const resolvedUid = String(uid || "").trim();
+  const profileUid = String(data?.uid || "").trim();
+  if (!resolvedUid || profileUid !== resolvedUid) {
     currentScope = null;
     return null;
   }
+  const nextScope = buildUserScopeRecord(uid, data);
   currentScope = nextScope;
   return { ...nextScope };
 };
@@ -147,6 +149,10 @@ export const loadUserScopeFromFirestore = async (uid = "", options = {}) => {
         return null;
       }
       const userData = userSnap.data() || {};
+      if (String(userData?.uid || "").trim() !== resolvedUid) {
+        clearCachedUserScope();
+        return null;
+      }
       return setCachedUserScope(resolvedUid, userData);
     })
     .finally(() => {

@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { checkEmailVerification } from "../utils/authUtils";
-import { isOnboardingComplete } from "../utils/onboardingUtils";
 import { useAuthContext } from "../context/AuthContext";
 
 /**
@@ -16,16 +15,22 @@ export default function ProtectedRoute({
 }) {
   const {
     authUser,
+    profile,
     role,
     schoolId,
     schoolDisabled,
     isPlatformSuperAdmin,
     isLoading,
+    isProfileSynced,
+    profileHasPendingWrites,
   } = useAuthContext();
   const isAdminRole = role === "admin";
   const enforceEmailVerification = requireVerified && isAdminRole;
+  const authUserUid = String(authUser?.uid || "").trim();
+  const onboardingComplete = profile?.onboarding?.onboardingCompleted === true;
+  const shouldWaitForProfile =
+    !!authUserUid && (!isProfileSynced || profileHasPendingWrites || !profile);
   const [emailVerified, setEmailVerified] = useState(false);
-  const [onboardingComplete, setOnboardingComplete] = useState(false);
   const [isCheckingState, setIsCheckingState] = useState(true);
 
   useEffect(() => {
@@ -35,8 +40,15 @@ export default function ProtectedRoute({
       if (!authUser) {
         if (isMounted) {
           setEmailVerified(false);
-          setOnboardingComplete(false);
           setIsCheckingState(false);
+        }
+        return;
+      }
+
+      if (shouldWaitForProfile) {
+        if (isMounted) {
+          setEmailVerified(false);
+          setIsCheckingState(true);
         }
         return;
       }
@@ -49,18 +61,9 @@ export default function ProtectedRoute({
         } else {
           setEmailVerified(true);
         }
-
-        if (schoolId) {
-          setOnboardingComplete(true);
-        } else {
-          const complete = await isOnboardingComplete();
-          if (!isMounted) return;
-          setOnboardingComplete(!!complete);
-        }
       } catch (error) {
         if (!isMounted) return;
         setEmailVerified(enforceEmailVerification ? !!authUser?.emailVerified : true);
-        setOnboardingComplete(!!schoolId);
         console.error("Error resolving route guard state:", error);
       } finally {
         if (isMounted) setIsCheckingState(false);
@@ -72,9 +75,9 @@ export default function ProtectedRoute({
     return () => {
       isMounted = false;
     };
-  }, [authUser, schoolId, enforceEmailVerification]);
+  }, [authUser, enforceEmailVerification, shouldWaitForProfile]);
 
-  if (isLoading || isCheckingState) {
+  if (isLoading || isCheckingState || shouldWaitForProfile) {
     return (
       <div className="flex h-screen items-center justify-center bg-gradient-to-r from-blue-50 to-blue-100 dark:from-gray-900 dark:to-gray-800">
         <div className="text-center">
@@ -102,11 +105,13 @@ export default function ProtectedRoute({
     return children;
   }
 
-  if (enforceEmailVerification && emailVerified && !onboardingComplete && !isOffline) {
+  if (!allowUnonboarded && !onboardingComplete && !isOffline) {
     return <Navigate to="/welcome" replace />;
   }
 
   if (!allowUnonboarded && onboardingComplete && !role) {
+    // Wait until profile is fully loaded before denying access
+    if (isLoading) return null;
     return <Navigate to="/access-denied" replace />;
   }
 

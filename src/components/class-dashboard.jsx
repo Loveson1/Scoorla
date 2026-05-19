@@ -1,12 +1,12 @@
 import { useCallback, useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useParams } from "react-router-dom";
 import { Download, Eye, Loader2, Pencil, Trash2, UserMinus } from "lucide-react";
 import {
   canDeleteStudentSafely,
   deleteStudentRecord,
+  getDepartmentAwareClassStudents,
   getClassSelection,
-  getClassStudents,
   getStudentReportRows,
   saveClassStudents,
   withdrawStudent,
@@ -16,9 +16,16 @@ import { downloadStudentResultPdf } from "../utils/studentResultPdf";
 import { useSessionContext } from "../context/SessionContext";
 import { useAuthContext } from "../context/AuthContext";
 import { useSchoolBootstrap } from "../context/SchoolBootstrapContext";
+import {
+  buildClassDashboardPath,
+  formatScopedClassLabel,
+  getClassIdFromRouteSegment,
+  getDepartmentsForClass,
+  resolveDepartmentFromRoute,
+} from "../utils/departmentUtils";
 
 const CLASS_DASHBOARD_SELECTION_STALE_TIME = 30 * 60 * 1000;
-const CLASS_DASHBOARD_ROSTER_STALE_TIME = 5 * 60 * 1000;
+const CLASS_DASHBOARD_ROSTER_STALE_TIME = 10 * 60 * 1000;
 const CLASS_DASHBOARD_RESULTS_STALE_TIME = 2 * 60 * 1000;
 const CLASS_DASHBOARD_GC_TIME = 30 * 60 * 1000;
 const EMPTY_CLASS_SELECTION = Object.freeze({
@@ -26,6 +33,8 @@ const EMPTY_CLASS_SELECTION = Object.freeze({
   term: "term1",
   session: "",
   sessionId: "",
+  departmentId: "",
+  departmentName: "",
 });
 const EMPTY_STUDENTS = Object.freeze([]);
 
@@ -57,6 +66,8 @@ const resolveClassDashboardSelection = ({
     sessionId: String(sessionId || storedSelection?.sessionId || "").trim(),
     session: String(sessionName || storedSelection?.session || "").trim(),
     term: String(termId || storedSelection?.term || "term1").trim() || "term1",
+    departmentId: String(storedSelection?.departmentId || "").trim(),
+    departmentName: String(storedSelection?.departmentName || "").trim(),
   };
 };
 
@@ -64,14 +75,15 @@ const buildClassRosterQueryKey = ({
   schoolId,
   userId,
   classId,
+  departmentId,
   sessionId,
   termId,
 }) => [
-  "classDashboard",
-  "roster",
+  "class",
   String(schoolId || "").trim() || "none",
   String(userId || "").trim() || "anonymous",
   String(classId || "").trim() || "none",
+  String(departmentId || "").trim() || "all",
   String(sessionId || "").trim() || "none",
   String(termId || "").trim() || "term1",
 ];
@@ -80,6 +92,7 @@ const buildStudentReportRowsQueryKey = ({
   schoolId,
   classId,
   studentId,
+  departmentId,
   sessionId,
   termId,
 }) => [
@@ -88,12 +101,14 @@ const buildStudentReportRowsQueryKey = ({
   String(schoolId || "").trim() || "none",
   String(classId || "").trim() || "none",
   String(studentId || "").trim() || "none",
+  String(departmentId || "").trim() || "all",
   String(sessionId || "").trim() || "none",
   String(termId || "").trim() || "term1",
 ];
 
 export default function ClassDashboard() {
   const navigate = useNavigate();
+  const params = useParams();
   const queryClient = useQueryClient();
   const { isAdmin, canManageStudents, canManageClass, authUser, schoolId } = useAuthContext();
   const { schoolData, adminSettings } = useSchoolBootstrap();
@@ -217,9 +232,50 @@ export default function ClassDashboard() {
     placeholderData: (previousData) => previousData,
   });
 
-  const classSelection = classSelectionQuery.data || EMPTY_CLASS_SELECTION;
+  const storedClassSelection = classSelectionQuery.data || EMPTY_CLASS_SELECTION;
+  const routeSelection = useMemo(() => {
+    const routeClassId = getClassIdFromRouteSegment(params.classSlug || "");
+    if (!routeClassId) return null;
+
+    const routeDepartment = resolveDepartmentFromRoute(
+      adminSettings?.classStructure || {},
+      routeClassId,
+      params.departmentSlug || ""
+    );
+
+    return {
+      class: routeClassId,
+      departmentId: String(routeDepartment?.id || "").trim(),
+      departmentName: String(routeDepartment?.name || "").trim(),
+    };
+  }, [adminSettings?.classStructure, params.classSlug, params.departmentSlug]);
+
+  const classSelection = useMemo(
+    () =>
+      routeSelection?.class
+        ? {
+            ...storedClassSelection,
+            class: routeSelection.class,
+            departmentId: routeSelection.departmentId,
+            departmentName: routeSelection.departmentName,
+          }
+        : storedClassSelection,
+    [routeSelection, storedClassSelection]
+  );
+
+  const selectedDepartments = getDepartmentsForClass(
+    adminSettings?.classStructure || {},
+    classSelection.class
+  );
+  const hasDepartments = selectedDepartments.length > 0;
+  const selectedDepartment =
+    selectedDepartments.find(
+      (department) =>
+        String(department?.id || "").trim() === String(classSelection.departmentId || "").trim()
+    ) || null;
+  const hasDepartmentSelection = !hasDepartments || !!classSelection.departmentId;
   const hasClassAccess = isAdmin || canManageClass(classSelection.class);
-  const canEditRoster = hasClassAccess && canManageStudents();
+  const canEditRoster = hasClassAccess && canManageStudents() && hasDepartmentSelection;
   const resolvedRosterSessionId =
     String(classSelection.sessionId || stableSelectionContext.sessionId || "").trim() || null;
   const resolvedRosterTermId =
@@ -245,26 +301,47 @@ export default function ClassDashboard() {
         schoolId,
         userId: authUser?.uid,
         classId: classSelection.class,
+        departmentId: classSelection.departmentId,
         sessionId: resolvedRosterSessionId,
         termId: resolvedRosterTermId,
       }),
-    [authUser?.uid, classSelection.class, resolvedRosterSessionId, resolvedRosterTermId, schoolId]
+    [
+      authUser?.uid,
+      classSelection.class,
+      classSelection.departmentId,
+      resolvedRosterSessionId,
+      resolvedRosterTermId,
+      schoolId,
+    ]
   );
 
   const fetchRoster = useCallback(async () => {
-    if (!schoolId || !classSelection.class || !resolvedRosterSessionId || !hasClassAccess) {
+    if (
+      !schoolId ||
+      !classSelection.class ||
+      !resolvedRosterSessionId ||
+      !hasClassAccess
+    ) {
       return [];
     }
 
-    const savedStudents = await getClassStudents(schoolId, classSelection.class, {
+    const savedStudents = await getDepartmentAwareClassStudents(
+      schoolId,
+      classSelection.class,
+      {
       sessionId: resolvedRosterSessionId,
       termId: resolvedRosterTermId,
+      departmentId: classSelection.departmentId,
+      classStructure: adminSettings?.classStructure || {},
       includeInactive: true,
       includeDeleted: true,
-    });
+      }
+    );
 
     return Array.isArray(savedStudents) ? savedStudents : [];
   }, [
+    adminSettings?.classStructure,
+    classSelection.departmentId,
     schoolId,
     classSelection.class,
     resolvedRosterSessionId,
@@ -274,12 +351,17 @@ export default function ClassDashboard() {
 
   const rosterQuery = useQuery({
     queryKey: rosterQueryKey,
-    enabled: !!schoolId && !!classSelection.class && !!resolvedRosterSessionId && hasClassAccess,
+    enabled:
+      !!schoolId &&
+      !!classSelection.class &&
+      !!resolvedRosterSessionId &&
+      hasClassAccess,
     queryFn: fetchRoster,
     staleTime: CLASS_DASHBOARD_ROSTER_STALE_TIME,
     gcTime: CLASS_DASHBOARD_GC_TIME,
     refetchOnMount: false,
     refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
   });
 
   const allStudents = hasClassAccess
@@ -306,7 +388,12 @@ export default function ClassDashboard() {
   );
 
   const reloadClassStudents = useCallback(async () => {
-    if (!schoolId || !classSelection.class || !resolvedRosterSessionId || !hasClassAccess) {
+    if (
+      !schoolId ||
+      !classSelection.class ||
+      !resolvedRosterSessionId ||
+      !hasClassAccess
+    ) {
       queryClient.setQueryData(rosterQueryKey, []);
       return [];
     }
@@ -321,6 +408,7 @@ export default function ClassDashboard() {
     return Array.isArray(refreshed) ? refreshed : [];
   }, [
     classSelection.class,
+    classSelection.departmentId,
     fetchRoster,
     hasClassAccess,
     queryClient,
@@ -338,6 +426,10 @@ export default function ClassDashboard() {
     }
     if (isReadOnlyView) {
       alert("This view is read-only. Return to the current term to add students.");
+      return;
+    }
+    if (hasDepartments && !classSelection.departmentId && !studentData.departmentId) {
+      alert("Select a department before adding a student.");
       return;
     }
     
@@ -374,12 +466,20 @@ export default function ClassDashboard() {
       return;
     }
 
+    const selectedDepartment =
+      selectedDepartments.find(
+        (department) =>
+          String(department?.id || "").trim() ===
+          String(studentData.departmentId || classSelection.departmentId || "").trim()
+      ) || null;
     const newStudent = {
       id: Date.now(),
       name: formatStudentName(studentData.name),
       regNumber: normalizedRegNumber,
       sex: studentData.sex || "",
       phone: studentData.phone || "",
+      departmentId: String(selectedDepartment?.id || "").trim(),
+      departmentName: String(selectedDepartment?.name || "").trim(),
     };
     const optimisticStudent = {
       ...newStudent,
@@ -397,6 +497,8 @@ export default function ClassDashboard() {
       const saveResult = await saveClassStudents(schoolId, classSelection.class, [newStudent], authUser.uid, {
         sessionId: writeSessionId,
         termId: resolvedRosterTermId,
+        departmentId: newStudent.departmentId,
+        classStructure: adminSettings?.classStructure || {},
         upsertExistingStudent: false,
         existingRoster: knownRoster,
       });
@@ -536,6 +638,7 @@ export default function ClassDashboard() {
           schoolId,
           classId: classSelection.class,
           studentId: student.id,
+          departmentId: student?.departmentId || classSelection.departmentId,
           termId: classSelection.term,
           sessionId: classSelection.sessionId || selectedSessionId,
         }),
@@ -544,6 +647,7 @@ export default function ClassDashboard() {
             schoolId,
             classId: classSelection.class,
             studentId: student.id,
+            departmentId: student?.departmentId || classSelection.departmentId,
             termId: classSelection.term,
             sessionId: classSelection.sessionId || selectedSessionId,
             adminSettings,
@@ -637,6 +741,13 @@ export default function ClassDashboard() {
       regNumber: normalizedRegNumber,
       sex: studentData.sex,
       phone: studentData.phone,
+      departmentId: String(studentData.departmentId || editingStudent.departmentId || "").trim(),
+      departmentName:
+        selectedDepartments.find(
+          (department) =>
+            String(department?.id || "").trim() ===
+            String(studentData.departmentId || editingStudent.departmentId || "").trim()
+        )?.name || editingStudent.departmentName || "",
     };
     setAllStudents((prev) =>
       prev.map((student) =>
@@ -657,6 +768,8 @@ export default function ClassDashboard() {
           {
             sessionId: writeSessionId,
             termId: resolvedRosterTermId,
+            departmentId: updatedStudent.departmentId,
+            classStructure: adminSettings?.classStructure || {},
             upsertExistingStudent: true,
             existingRoster: currentRoster,
           }
@@ -748,18 +861,6 @@ export default function ClassDashboard() {
       return formatStudentName(left?.name).localeCompare(formatStudentName(right?.name));
     });
 
-  const getClassLabel = (classId) => {
-    const classMap = {
-      jss1: "JSS 1",
-      jss2: "JSS 2",
-      jss3: "JSS 3",
-      sss1: "SSS 1",
-      sss2: "SSS 2",
-      sss3: "SSS 3",
-    };
-    return classMap[classId] || classId;
-  };
-
   const getTermLabel = (termId) => {
     const termMap = {
       "term1": "First Term",
@@ -814,6 +915,40 @@ export default function ClassDashboard() {
           You are not assigned to this resource.
         </div>
       )}
+      {hasDepartments && !classSelection.departmentId && hasClassAccess && (
+        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-4 dark:border-blue-800 dark:bg-blue-900/20">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-blue-900 dark:text-blue-100">
+                This class is organized by department.
+              </p>
+              <p className="mt-1 text-xs text-blue-800/90 dark:text-blue-200/90">
+                Choose a department to manage roster changes for the right student group.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {selectedDepartments.map((department) => (
+                <button
+                  key={department.id}
+                  type="button"
+                  onClick={() =>
+                    navigate(
+                      buildClassDashboardPath({
+                        classId: classSelection.class,
+                        departmentId: department.id,
+                        classStructure: adminSettings?.classStructure || {},
+                      })
+                    )
+                  }
+                  className="rounded-lg bg-white px-3 py-2 text-sm font-semibold text-blue-800 transition-all duration-300 hover:bg-blue-100 dark:bg-gray-800 dark:text-blue-300 dark:hover:bg-gray-700"
+                >
+                  {department.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       <div className="">
         <div className="bg-gradient-to-r from-blue-50 to-blue-100 dark:from-gray-800 dark:to-gray-700 rounded-lg p-6 md:p-8 mb-8">
           <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-4 sm:items-center">
@@ -840,7 +975,10 @@ export default function ClassDashboard() {
             <div>
               <p className="text-xs text-gray-600 dark:text-gray-400">Class</p>
               <p className="text-sm font-bold text-black dark:text-white">
-                {getClassLabel(classSelection.class)}
+                {formatScopedClassLabel(
+                  classSelection.class,
+                  selectedDepartment?.name || classSelection.departmentName
+                )}
               </p>
             </div>
 
@@ -1027,6 +1165,11 @@ export default function ClassDashboard() {
                       >
                         {getStatusMeta(student.status).label}
                       </span>
+                      {!classSelection.departmentId && student.departmentName && (
+                        <p className="mt-1 text-xs font-medium text-blue-700 dark:text-blue-300">
+                          Department: {student.departmentName}
+                        </p>
+                      )}
                       {student.regNumber && (
                         <p className="text-xs text-gray-500 dark:text-gray-400">
                           Reg: {student.regNumber}
@@ -1170,6 +1313,9 @@ export default function ClassDashboard() {
         onUpdate={handleUpdateStudent}
         editingStudent={editingStudent}
         isSubmitting={isStudentSubmitting}
+        departments={selectedDepartments}
+        defaultDepartmentId={classSelection.departmentId}
+        departmentRequired={hasDepartments}
       />
 
       

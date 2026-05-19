@@ -108,15 +108,15 @@ function App() {
           </Route>
 
           {/* ===== Onboarding Route (requires auth, but NOT onboarding complete) ===== */}
-          {/* School creation is part of onboarding flow */}
           <Route
-            path="/school"
+            path="/onboarding"
             element={
               <ProtectedRoute allowUnonboarded={true}>
                 <School />
               </ProtectedRoute>
             }
           />
+          <Route path="/school" element={<Navigate to="/onboarding" replace />} />
 
           {/* ===== Protected App Routes (requires auth + completed onboarding) ===== */}
           <Route
@@ -172,7 +172,43 @@ function App() {
             />
 
             <Route
+              path="dashboard/class/:classSlug"
+              element={
+                <ProtectedRoute allowedRoles={["admin", "class_teacher", "class_subject_teacher"]}>
+                  <ClassDashboard />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="dashboard/class/:classSlug/:departmentSlug"
+              element={
+                <ProtectedRoute allowedRoles={["admin", "class_teacher", "class_subject_teacher"]}>
+                  <ClassDashboard />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
               path="record-dashboard"
+              element={
+                <ProtectedRoute allowedRoles={["admin", "subject_teacher", "class_subject_teacher"]}>
+                  <RecordDashboard />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="dashboard/record/:classSlug/:subjectSlug"
+              element={
+                <ProtectedRoute allowedRoles={["admin", "subject_teacher", "class_subject_teacher"]}>
+                  <RecordDashboard />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="dashboard/record/:classSlug/:departmentSlug/:subjectSlug"
               element={
                 <ProtectedRoute allowedRoles={["admin", "subject_teacher", "class_subject_teacher"]}>
                   <RecordDashboard />

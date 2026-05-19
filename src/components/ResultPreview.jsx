@@ -12,6 +12,12 @@ import {
 import { useSessionContext } from "../context/SessionContext";
 import { useAuthContext } from "../context/AuthContext";
 import { useSchoolBootstrap } from "../context/SchoolBootstrapContext";
+import {
+  buildRecordDashboardPath,
+  formatScopedClassLabel,
+  getDepartmentsForClass,
+  isMergedDepartmentSubject,
+} from "../utils/departmentUtils";
 
 const BRAND = {
   ink: [30, 41, 59],
@@ -168,6 +174,53 @@ export default function ResultPreview() {
   const hasRecordAccess =
     isAdmin || canRecordClassSubject(resultSelection.class, resultSelection.subject);
   const resultConfig = useMemo(() => adminSettings?.resultConfig || null, [adminSettings]);
+  const selectedDepartments = useMemo(
+    () => getDepartmentsForClass(adminSettings?.classStructure || {}, resultSelection.class),
+    [adminSettings?.classStructure, resultSelection.class]
+  );
+  const selectedDepartment = useMemo(
+    () =>
+      selectedDepartments.find(
+        (department) =>
+          String(department?.id || "").trim() ===
+          String(resultSelection.departmentId || "").trim()
+      ) || null,
+    [resultSelection.departmentId, selectedDepartments]
+  );
+  const isMergedSubject = useMemo(
+    () =>
+      selectedDepartments.length > 0 &&
+      !!resultSelection.subject &&
+      isMergedDepartmentSubject(
+        adminSettings?.classStructure || {},
+        resultSelection.class,
+        resultSelection.subject
+      ),
+    [
+      adminSettings?.classStructure,
+      resultSelection.class,
+      resultSelection.subject,
+      selectedDepartments.length,
+    ]
+  );
+  const scopedClassLabel = useMemo(
+    () =>
+      formatScopedClassLabel(
+        resultSelection.class,
+        isMergedSubject
+          ? ""
+          : selectedDepartment?.name || resultSelection.departmentName
+      ),
+    [
+      isMergedSubject,
+      resultSelection.class,
+      resultSelection.departmentName,
+      selectedDepartment?.name,
+    ]
+  );
+  const requiresDepartmentSelection =
+    selectedDepartments.length > 0 && !selectedDepartment && !isMergedSubject;
+  const hasScopedRecordAccess = hasRecordAccess && !requiresDepartmentSelection;
 
   useEffect(() => {
     if (isBootstrapLoading) return;
@@ -200,18 +253,6 @@ export default function ResultPreview() {
     selectedTermId,
   ]);
 
-  const getClassLabel = (classId) => {
-    const classMap = {
-      jss1: "JSS 1",
-      jss2: "JSS 2",
-      jss3: "JSS 3",
-      sss1: "SSS 1",
-      sss2: "SSS 2",
-      sss3: "SSS 3",
-    };
-    return classMap[classId] || classId;
-  };
-
   const getTermLabel = (termId) => {
     const termMap = {
       term1: "First Term",
@@ -231,7 +272,7 @@ export default function ResultPreview() {
       if (!schoolId || !resultSelection.class) return;
 
       try {
-        if (!hasRecordAccess) {
+        if (!hasScopedRecordAccess) {
           setResults([]);
           return;
         }
@@ -241,7 +282,7 @@ export default function ResultPreview() {
 
         let previewOverrideScores = {};
         try {
-          const previewOverrideKey = `preview_scores_${schoolId || ""}_${resultSelection.class || ""}_${resultSelection.subject || ""}_${resolvedSessionId || ""}_${resolvedTermId || ""}`;
+          const previewOverrideKey = `preview_scores_${schoolId || ""}_${resultSelection.class || ""}_${resultSelection.departmentId || "all"}_${resultSelection.subject || ""}_${resolvedSessionId || ""}_${resolvedTermId || ""}`;
           const raw = sessionStorage.getItem(previewOverrideKey);
           previewOverrideScores = raw ? JSON.parse(raw) : {};
         } catch {
@@ -251,6 +292,7 @@ export default function ResultPreview() {
         const previewRows = await getClassSubjectResultRows({
           schoolId,
           classId: resultSelection.class,
+          departmentId: resultSelection.departmentId,
           subjectId: resultSelection.subject,
           termId: resolvedTermId,
           sessionId: resolvedSessionId,
@@ -270,6 +312,7 @@ export default function ResultPreview() {
   }, [
     schoolId,
     resultSelection.class,
+    resultSelection.departmentId,
     resultSelection.subject,
     resultSelection.term,
     resultSelection.sessionId,
@@ -277,7 +320,7 @@ export default function ResultPreview() {
     selectedSessionId,
     selectedTermId,
     isHistoricalView,
-    hasRecordAccess,
+    hasScopedRecordAccess,
     adminSettings,
   ]);
 
@@ -421,11 +464,11 @@ export default function ResultPreview() {
     return items;
   }, [adminSettings, resultConfig, resultSelection.term]);
 
-  const downloadFilename = `${resultSelection.subject || "Subject"}_${getClassLabel(
-    resultSelection.class,
-  )}_${resultSelection.term || "term"}_${resultSelection.session || "session"}.pdf`;
+  const downloadFilename = `${resultSelection.subject || "Subject"}_${scopedClassLabel || "Class"}_${resultSelection.term || "term"}_${resultSelection.session || "session"}.pdf`;
 
   const handleDownloadPDF = async () => {
+    if (!hasScopedRecordAccess) return;
+
     try {
       const { jsPDF } = await import("jspdf");
       const pdf = new jsPDF({
@@ -524,7 +567,7 @@ export default function ResultPreview() {
         pdf.text("RESULT SCORE SHEET", pageWidth / 2, 34.8, { align: "center" });
 
         const cards = [
-          `Class: ${getClassLabel(resultSelection.class)}`,
+          `Class: ${scopedClassLabel}`,
           `Subject: ${resultSelection.subject || "Not set"}`,
           `Term: ${getTermLabel(resultSelection.term)}`,
           `Session: ${resultSelection.session || "Not set"}`,
@@ -710,6 +753,39 @@ export default function ResultPreview() {
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_right,_rgba(191,219,254,0.42),_transparent_38%),linear-gradient(180deg,_#f8fbff_0%,_#eff6ff_42%,_#f8fbff_100%)] px-3 py-4 md:px-8 md:py-6">
+      {requiresDepartmentSelection ? (
+        <div className="mx-auto mb-4 max-w-6xl rounded-2xl border border-blue-200 bg-blue-50 px-4 py-4 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-100">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="font-semibold">Select a department to preview this subject.</p>
+              <p className="mt-1 text-xs text-blue-800/90 dark:text-blue-200/90">
+                This subject is department-specific, so the score sheet needs the matching department route.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {selectedDepartments.map((department) => (
+                <button
+                  key={department.id}
+                  type="button"
+                  onClick={() =>
+                    navigate(
+                      buildRecordDashboardPath({
+                        classId: resultSelection.class,
+                        departmentId: department.id,
+                        subjectId: resultSelection.subject,
+                        classStructure: adminSettings?.classStructure || {},
+                      })
+                    )
+                  }
+                  className="rounded-lg bg-white px-3 py-2 text-sm font-semibold text-blue-800 transition-all duration-300 hover:bg-blue-100 dark:bg-gray-800 dark:text-blue-300 dark:hover:bg-gray-700"
+                >
+                  {department.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
       {!hasRecordAccess ? (
         <div className="mx-auto mb-4 max-w-6xl rounded-2xl border border-red-300 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 dark:border-red-700 dark:bg-red-900/20 dark:text-red-300">
           You are not assigned to this resource.
@@ -727,14 +803,23 @@ export default function ResultPreview() {
 
       <div className="mx-auto mb-4 flex max-w-6xl flex-wrap justify-center gap-3 md:mb-6">
         <button
-          onClick={() => navigate("/record-dashboard")}
+          onClick={() =>
+            navigate(
+              buildRecordDashboardPath({
+                classId: resultSelection.class,
+                departmentId: resultSelection.departmentId,
+                subjectId: resultSelection.subject,
+                classStructure: adminSettings?.classStructure || {},
+              })
+            )
+          }
           className="px-6 py-2 border-2 border-gray-300 dark:border-gray-600 text-black dark:text-black font-semibold rounded-lg hover:bg-gray-100 dark:hover:bg-gray-100 transition-all duration-300"
         >
           Back
         </button>
         <button
           onClick={handleDownloadPDF}
-          disabled={!hasRecordAccess}
+          disabled={!hasScopedRecordAccess}
           className="px-6 py-2 bg-green-600 hover:bg-green-700 dark:bg-green-700 dark:hover:bg-green-600 text-white font-semibold rounded-lg transition-all duration-300 disabled:cursor-not-allowed disabled:bg-green-300"
         >
           Download Score Sheet
@@ -801,7 +886,7 @@ export default function ResultPreview() {
                     Class
                   </p>
                   <p className="mt-1 text-lg font-semibold">
-                    {getClassLabel(resultSelection.class)}
+                    {scopedClassLabel}
                   </p>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3 backdrop-blur-sm">

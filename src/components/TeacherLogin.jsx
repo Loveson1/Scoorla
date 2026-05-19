@@ -49,12 +49,6 @@ export default function TeacherLogin() {
         setError("This school account is temporarily disabled. Contact support.");
         return;
       }
-      try {
-        localStorage.setItem("userId", result.uid);
-      } catch {
-        // no-op
-      }
-
       navigate("/school-dashboard", { replace: true });
     } catch (loginError) {
       console.error("Teacher login failed:", loginError);

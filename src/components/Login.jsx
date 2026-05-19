@@ -56,8 +56,6 @@ export default function Login() {
       const signedInUser = userCredential.user;
       const hasPlatformAccess = await isSuperAdminUser(signedInUser.uid);
       if (hasPlatformAccess) {
-        localStorage.setItem("userId", signedInUser.uid);
-        localStorage.setItem("userEmail", signedInUser.email);
         setForm({
           email: "",
           password: "",
@@ -79,42 +77,61 @@ export default function Login() {
       // Also recover legacy admin accounts that were unintentionally marked inactive.
       try {
         const userSnapshot = await getDoc(userRef);
-        const userProfile = userSnapshot.exists() ? userSnapshot.data() || {} : {};
-        const userSchoolId = String(userProfile?.schoolId || "").trim();
-        if (userSchoolId) {
-          const schoolRecord = await loadSchoolDirectoryRecord(userSchoolId);
-          if (schoolRecord?.status === "disabled") {
+        if (!userSnapshot.exists()) {
+          await setDoc(userRef, {
+            uid: signedInUser.uid,
+            email: signedInUser.email || "",
+            role: "admin",
+            isActive: true,
+            isOnline: true,
+            createdAt: serverTimestamp(),
+            lastLoginAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          const userProfile = userSnapshot.data() || {};
+          const profileMatchesAuth =
+            String(userProfile?.uid || "").trim() === String(signedInUser.uid || "").trim();
+          if (!profileMatchesAuth) {
             await logoutUser();
-            setError("This school account is temporarily disabled. Contact support.");
+            setError("This account profile is not linked to the current Firebase UID.");
             setLoading(false);
             return;
           }
-        }
-        const roleToken = String(userProfile?.role || "").trim().toLowerCase();
-        const hasSchool = String(userProfile?.schoolId || "").trim().length > 0;
-        const needsRoleRecovery = !roleToken && hasSchool;
-        const shouldForceActive = roleToken === "admin" || needsRoleRecovery;
+          const userSchoolId = String(userProfile?.schoolId || "").trim();
+          if (userSchoolId) {
+            const schoolRecord = await loadSchoolDirectoryRecord(userSchoolId);
+            if (schoolRecord?.status === "disabled") {
+              await logoutUser();
+              setError("This school account is temporarily disabled. Contact support.");
+              setLoading(false);
+              return;
+            }
+          }
+          const roleToken = String(userProfile?.role || "").trim().toLowerCase();
+          const hasSchool = String(userProfile?.schoolId || "").trim().length > 0;
+          const needsRoleRecovery = !roleToken && hasSchool;
+          const shouldForceActive = roleToken === "admin" || needsRoleRecovery;
 
-        await setDoc(
-          userRef,
-          {
-            uid: signedInUser.uid,
-            email: signedInUser.email || "",
-            isOnline: true,
-            lastLoginAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-            ...(shouldForceActive ? { isActive: true } : {}),
-            ...(needsRoleRecovery ? { role: "admin" } : {}),
-          },
-          { merge: true }
-        );
+          if (hasSchool) {
+            await setDoc(
+              userRef,
+              {
+                uid: signedInUser.uid,
+                email: signedInUser.email || "",
+                isOnline: true,
+                lastLoginAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+                ...(shouldForceActive ? { isActive: true } : {}),
+                ...(needsRoleRecovery ? { role: "admin" } : {}),
+              },
+              { merge: true }
+            );
+          }
+        }
       } catch (profileTouchError) {
         console.warn("Unable to update login telemetry:", profileTouchError);
       }
-
-      // Store user info in localStorage
-      localStorage.setItem("userId", signedInUser.uid);
-      localStorage.setItem("userEmail", signedInUser.email);
 
       // Reset form
       setForm({
@@ -132,7 +149,7 @@ export default function Login() {
       }
 
       // Check onboarding status and redirect accordingly
-      const isComplete = await isOnboardingComplete();
+      const isComplete = await isOnboardingComplete(signedInUser.uid);
       if (isComplete) {
         // User already completed onboarding, go to dashboard
         navigate("/school-dashboard", { replace: true });

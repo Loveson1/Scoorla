@@ -1,4 +1,4 @@
-import { setSessionState, getSessionState } from "../../utils/userSession";
+﻿import { setSessionState, getSessionState } from "../../utils/userSession";
 import { auth, firestore } from "../../firebase";
 import {
   collection,
@@ -38,6 +38,15 @@ import {
   dispatchSchoolProfileUpdated,
   dispatchSchoolSettingsUpdated,
 } from "../../utils/appEvents";
+import {
+  filterStudentsByDepartmentScope,
+  getClassStructureConfig,
+  getDefaultClassStructure,
+  getDepartmentById,
+  getDepartmentSubjectOptions,
+  normalizeClassStructure,
+  resolveDepartmentFromRoute,
+} from "../../utils/departmentUtils";
 import {
   ensureUserScope,
   getCachedUserScope,
@@ -936,6 +945,8 @@ const normalizeRecordRosterRows = (rows = []) =>
         enrollmentId: row?.enrollmentId ? String(row.enrollmentId).trim() : null,
         name: String(row?.name || "").trim(),
         classId: normalizeClassId(row?.classId || ""),
+        departmentId: String(row?.departmentId || "").trim(),
+        departmentName: String(row?.departmentName || "").trim(),
         regNo: String(row?.regNo || row?.regNumber || "").trim(),
         regNumber: String(row?.regNumber || row?.regNo || "").trim(),
         gender: String(row?.gender || row?.sex || "").trim(),
@@ -1297,6 +1308,8 @@ const mapStudentRecord = (
   enrollmentId: enrollmentId || null,
   name: record?.name || "",
   classId: fallbackClassId || record?.classId || "",
+  departmentId: enrollmentData?.departmentId || record?.departmentId || "",
+  departmentName: enrollmentData?.departmentName || record?.departmentName || "",
   regNo: record?.regNo || "",
   regNumber: record?.regNo || "",
   gender: record?.gender || record?.sex || "",
@@ -2237,6 +2250,57 @@ const buildEmptyScoreRow = () => ({
   lastTermCumulativeCache: null,
 });
 
+const buildScopedSubjectRowsByStudent = ({
+  students = [],
+  classStructure = {},
+  classId = "",
+  departmentId = "",
+  subjectId = "",
+  rowsByStudent = {},
+  previewOverrides = null,
+}) => {
+  const scopedStudents = filterStudentsByDepartmentScope(
+    students,
+    classStructure,
+    classId,
+    {
+      departmentId,
+      subjectId,
+    }
+  );
+
+  const completeRowsByStudent = scopedStudents.reduce((acc, student) => {
+    const studentId = String(student?.id || "").trim();
+    if (!studentId) return acc;
+    acc[studentId] = {
+      studentId,
+      subjectId,
+      ...(rowsByStudent?.[studentId] || buildEmptyScoreRow()),
+    };
+    return acc;
+  }, {});
+
+  Object.entries(previewOverrides || {}).forEach(([studentId, localScore]) => {
+    const normalizedStudentId = String(studentId || "").trim();
+    if (
+      !normalizedStudentId ||
+      !completeRowsByStudent[normalizedStudentId] ||
+      !hasAnyStoredScoreValue(localScore)
+    ) {
+      return;
+    }
+    completeRowsByStudent[normalizedStudentId] = {
+      ...completeRowsByStudent[normalizedStudentId],
+      ...localScore,
+    };
+  });
+
+  return {
+    scopedStudents,
+    completeRowsByStudent,
+  };
+};
+
 export async function getClassSubjectResultRows({
   schoolId,
   classId,
@@ -2245,6 +2309,7 @@ export async function getClassSubjectResultRows({
   sessionId,
   adminSettings = null,
   classStudents = null,
+  departmentId = "",
   previewOverrides = null,
   includeInactive = false,
   includeDeleted = false,
@@ -2266,12 +2331,15 @@ export async function getClassSubjectResultRows({
 
     const resolvedTermId = await resolveTerm(termId || "term1", schoolId);
     const normalizedTermId = normalizeTermAlias(resolvedTermId);
-    const resultConfig = normalizeResultConfig(
-      adminSettings?.resultConfig || (await getResultConfig(schoolId))
-    );
+    const effectiveAdminSettings = adminSettings || (await getAdminSettings(schoolId));
+    const resultConfig = normalizeResultConfig(effectiveAdminSettings?.resultConfig || {});
     const gradingScale = getConfiguredGradingScale(
-      adminSettings?.gradingScale,
+      effectiveAdminSettings?.gradingScale,
       resultConfig
+    );
+    const classStructure = getNormalizedClassStructure(
+      schoolId,
+      effectiveAdminSettings?.classStructure || {}
     );
     const resolvedStudents = Array.isArray(classStudents)
       ? classStudents
@@ -2295,32 +2363,14 @@ export async function getClassSubjectResultRows({
     });
     const groupedRowsBySubject = groupBestScoreRowsBySubjectAndStudent(currentRows);
     const subjectToken = normalizeSubjectMatchToken(normalizedSubjectId);
-    const completeRowsByStudent = (resolvedStudents || []).reduce((acc, student) => {
-      const studentId = String(student?.id || "").trim();
-      if (!studentId) {
-        return acc;
-      }
-      acc[studentId] = {
-        studentId,
-        subjectId: normalizedSubjectId,
-        ...(groupedRowsBySubject?.[subjectToken]?.[studentId] || buildEmptyScoreRow()),
-      };
-      return acc;
-    }, {});
-
-    Object.entries(previewOverrides || {}).forEach(([studentId, localScore]) => {
-      const normalizedStudentId = String(studentId || "").trim();
-      if (!normalizedStudentId || !hasAnyStoredScoreValue(localScore)) {
-        return;
-      }
-      completeRowsByStudent[normalizedStudentId] = {
-        ...(completeRowsByStudent[normalizedStudentId] || {
-          studentId: normalizedStudentId,
-          subjectId: normalizedSubjectId,
-          ...buildEmptyScoreRow(),
-        }),
-        ...localScore,
-      };
+    const { scopedStudents, completeRowsByStudent } = buildScopedSubjectRowsByStudent({
+      students: resolvedStudents || [],
+      classStructure,
+      classId,
+      departmentId,
+      subjectId: normalizedSubjectId,
+      rowsByStudent: groupedRowsBySubject?.[subjectToken] || {},
+      previewOverrides,
     });
 
     let previousTotalsBySubject = {};
@@ -2357,7 +2407,7 @@ export async function getClassSubjectResultRows({
       resultConfig,
     });
 
-    return (resolvedStudents || []).map((student) => {
+    return (scopedStudents || []).map((student) => {
       const studentId = String(student?.id || "").trim();
       const studentSnapshot =
         snapshot?.rowsByStudent?.[studentId] || {
@@ -2408,6 +2458,8 @@ export async function getStudentReportRows({
   termId,
   sessionId,
   adminSettings = null,
+  departmentId = "",
+  classStudents = null,
   screen = "StudentResult",
 }) {
   try {
@@ -2426,15 +2478,35 @@ export async function getStudentReportRows({
 
     const resolvedTermId = await resolveTerm(termId || "term1", schoolId);
     const normalizedTermId = normalizeTermAlias(resolvedTermId);
-    const resultConfig = normalizeResultConfig(
-      adminSettings?.resultConfig || (await getResultConfig(schoolId))
-    );
+    const effectiveAdminSettings = adminSettings || (await getAdminSettings(schoolId));
+    const resultConfig = normalizeResultConfig(effectiveAdminSettings?.resultConfig || {});
     const gradingScale = getConfiguredGradingScale(
-      adminSettings?.gradingScale,
+      effectiveAdminSettings?.gradingScale,
       resultConfig
     );
+    const classStructure = getNormalizedClassStructure(
+      schoolId,
+      effectiveAdminSettings?.classStructure || {}
+    );
+    const resolvedStudents = Array.isArray(classStudents)
+      ? classStudents
+      : await getClassStudents(schoolId, classId, {
+          sessionId: resolvedSessionId,
+          termId: normalizedTermId,
+          includeInactive: true,
+          includeDeleted: true,
+        });
+    const selectedStudent =
+      (resolvedStudents || []).find(
+        (student) => String(student?.id || "").trim() === normalizedStudentId
+      ) || null;
+    const effectiveDepartmentId =
+      String(departmentId || selectedStudent?.departmentId || "").trim();
     const subjects = await filterSubjectsForCurrentUserScope({
-      subjects: getSubjectsByClass(schoolId, classId),
+      subjects: getDepartmentAwareSubjects(schoolId, classId, {
+        departmentId: effectiveDepartmentId,
+        classStructure,
+      }),
       screen,
     });
     if (subjects.length === 0) {
@@ -2469,9 +2541,17 @@ export async function getStudentReportRows({
 
     return subjects.reduce((rows, subject) => {
       const subjectToken = normalizeSubjectMatchToken(subject);
+      const { completeRowsByStudent } = buildScopedSubjectRowsByStudent({
+        students: resolvedStudents || [],
+        classStructure,
+        classId,
+        departmentId: effectiveDepartmentId,
+        subjectId: subject,
+        rowsByStudent: groupedRowsBySubject?.[subjectToken] || {},
+      });
       const snapshot = buildSubjectScoreSnapshotFromRows({
         termId: normalizedTermId,
-        rowsByStudent: groupedRowsBySubject?.[subjectToken] || {},
+        rowsByStudent: completeRowsByStudent,
         previousTotalsByStudent: previousTotalsBySubject?.[subjectToken] || {},
         resultConfig,
       });
@@ -2524,6 +2604,9 @@ export async function saveSchoolData(form, userId, schoolId) {
     
     const schoolData = {
       schoolId,
+      ownerUid: userId,
+      createdByUid: userId,
+      adminUids: [userId],
       name: form.name,
       logo: form.logo || '',
       address: form.address || '',
@@ -2797,7 +2880,6 @@ export function saveClassSelection(classData, userId) {
     if (!userId) return;
     setSessionState(`classSelection_${userId}`, JSON.stringify(classData));
     localStorage.setItem(`classSelection_${userId}`, JSON.stringify(classData));
-    localStorage.setItem("classSelection", JSON.stringify(classData));
   } catch (error) {
     console.error("Error saving class selection:", error);
   }
@@ -2810,24 +2892,19 @@ export function saveClassSelection(classData, userId) {
 export function getClassSelection(userId) {
   try {
     if (!userId) {
-      // Fallback for preview mode: use sessionStorage 'classSelection'
-      const sessionData = sessionStorage.getItem("classSelection");
-      const localData = localStorage.getItem("classSelection");
-      const data = sessionData || localData;
-      return data ? JSON.parse(data) : { class: "", term: "", session: "" };
+      return { class: "", term: "", session: "", sessionId: "", departmentId: "", departmentName: "" };
     }
     const data = getSessionState(`classSelection_${userId}`);
     if (data) {
       return JSON.parse(data);
     }
-    const fallback =
-      sessionStorage.getItem("classSelection") ||
-      localStorage.getItem(`classSelection_${userId}`) ||
-      localStorage.getItem("classSelection");
-    return fallback ? JSON.parse(fallback) : { class: "", term: "", session: "" };
+    const fallback = localStorage.getItem(`classSelection_${userId}`);
+    return fallback
+      ? JSON.parse(fallback)
+      : { class: "", term: "", session: "", sessionId: "", departmentId: "", departmentName: "" };
   } catch (error) {
     console.error("Error getting class selection:", error);
-    return { class: "", term: "", session: "" };
+    return { class: "", term: "", session: "", sessionId: "", departmentId: "", departmentName: "" };
   }
 }
 
@@ -2935,6 +3012,40 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
     ).catch(() => null);
     const effectiveTermAlias = normalizeTermAlias(termRecord?.alias || effectiveTermId);
     const effectiveTermOrder = Number(termRecord?.sortOrder) || getTermSortOrder(effectiveTermAlias);
+    const classStructure = getNormalizedClassStructure(
+      schoolId,
+      options?.classStructure || options?.adminSettings?.classStructure || {}
+    );
+    const classStructureConfig = getClassStructureConfig(classStructure, classId);
+    const resolveDepartmentSelection = (studentData = {}, fallbackEnrollment = null) => {
+      if (!classStructureConfig?.hasDepartments) {
+        return {
+          departmentId: "",
+          departmentName: "",
+        };
+      }
+
+      const requestedDepartmentToken = String(
+        studentData?.departmentId ||
+          studentData?.departmentName ||
+          fallbackEnrollment?.departmentId ||
+          fallbackEnrollment?.departmentName ||
+          options?.departmentId ||
+          ""
+      ).trim();
+      const resolvedDepartment =
+        getDepartmentById(classStructure, classId, requestedDepartmentToken) ||
+        resolveDepartmentFromRoute(classStructure, classId, requestedDepartmentToken);
+
+      if (!resolvedDepartment?.id) {
+        throw new Error("Select a valid department before saving students.");
+      }
+
+      return {
+        departmentId: String(resolvedDepartment.id || "").trim(),
+        departmentName: String(resolvedDepartment.name || "").trim(),
+      };
+    };
 
     const formatStudentName = (value) =>
       String(value || "")
@@ -3065,6 +3176,13 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
       const isExistingStudent = !!existingId && typeof student?.id !== "number";
 
       if (isExistingStudent) {
+        const existingClassEnrollment = (enrollmentByStudentId[existingId] || []).find(
+          (enrollment) => String(enrollment?.classId || "") === String(classId)
+        );
+        const resolvedDepartment = resolveDepartmentSelection(
+          student,
+          existingClassEnrollment || null
+        );
         if (shouldUpsertExisting) {
           const studentRef = doc(firestore, "students", existingId);
           batch.set(
@@ -3084,11 +3202,33 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
           batchWriteCount += 1;
         }
 
-        const hasClassEnrollment = (enrollmentByStudentId[existingId] || []).some(
-          (enrollment) => String(enrollment?.classId || "") === String(classId)
-        );
-        let resolvedEnrollmentId = String(student?.enrollmentId || "").trim();
-        if (!hasClassEnrollment) {
+        let resolvedEnrollmentId =
+          String(student?.enrollmentId || "").trim() ||
+          String(
+            existingClassEnrollment?.id || existingClassEnrollment?.enrollmentId || ""
+          ).trim();
+        if (existingClassEnrollment?.id) {
+          const existingDepartmentId = String(existingClassEnrollment?.departmentId || "").trim();
+          const existingDepartmentName = String(
+            existingClassEnrollment?.departmentName || ""
+          ).trim();
+          if (
+            existingDepartmentId !== resolvedDepartment.departmentId ||
+            existingDepartmentName !== resolvedDepartment.departmentName
+          ) {
+            batch.set(
+              doc(firestore, "enrollments", existingClassEnrollment.id),
+              {
+                departmentId: resolvedDepartment.departmentId,
+                departmentName: resolvedDepartment.departmentName,
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+            batchWriteCount += 1;
+          }
+        }
+        if (!existingClassEnrollment) {
           const enrollmentRef = doc(collection(firestore, "enrollments"));
           resolvedEnrollmentId = enrollmentRef.id;
           batch.set(enrollmentRef, {
@@ -3096,6 +3236,8 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
             schoolId,
             studentId: existingId,
             classId,
+            departmentId: resolvedDepartment.departmentId,
+            departmentName: resolvedDepartment.departmentName,
             sessionId: effectiveSessionId,
             entryTermId: effectiveTermAlias,
             entryTermOrder: effectiveTermOrder,
@@ -3125,6 +3267,8 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
             classId,
             {
               classId,
+              departmentId: resolvedDepartment.departmentId,
+              departmentName: resolvedDepartment.departmentName,
               sessionId: effectiveSessionId,
               entryTermId: effectiveTermAlias,
               entryTermOrder: effectiveTermOrder,
@@ -3137,6 +3281,7 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
 
       const studentRef = doc(collection(firestore, "students"));
       const enrollmentRef = doc(collection(firestore, "enrollments"));
+      const resolvedDepartment = resolveDepartmentSelection(student, null);
       batch.set(studentRef, {
         studentId: studentRef.id,
         schoolId,
@@ -3157,6 +3302,8 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
         schoolId,
         studentId: studentRef.id,
         classId,
+        departmentId: resolvedDepartment.departmentId,
+        departmentName: resolvedDepartment.departmentName,
         sessionId: effectiveSessionId,
         entryTermId: effectiveTermAlias,
         entryTermOrder: effectiveTermOrder,
@@ -3186,6 +3333,8 @@ export async function saveClassStudents(schoolId, classId, students, userId, opt
           classId,
           {
             classId,
+            departmentId: resolvedDepartment.departmentId,
+            departmentName: resolvedDepartment.departmentName,
             sessionId: effectiveSessionId,
             entryTermId: effectiveTermAlias,
             entryTermOrder: effectiveTermOrder,
@@ -3978,9 +4127,11 @@ export async function getRecordDashboardScores(
   sessionId,
   options = {}
 ) {
-  const resolvedSessionId = await resolveSession(sessionId || getCurrentSessionId(), schoolId);
-  if (!resolvedSessionId) return {};
-  const resolvedTermId = await resolveTerm(termId || "term1", schoolId);
+  const [resolvedSessionId, resolvedTermId] = await Promise.all([
+    resolveSession(sessionId || getCurrentSessionId(), schoolId),
+    resolveTerm(termId || "term1", schoolId),
+  ]);
+  if (!resolvedSessionId || !resolvedTermId) return {};
 
   const cached = await readRecordDashboardScoreCache({
     schoolId,
@@ -3994,6 +4145,10 @@ export async function getRecordDashboardScores(
     return cached.scores;
   }
 
+  const resolvedStudents = options?.studentsPromise
+    ? await options.studentsPromise
+    : options?.students || [];
+
   const liveScores = await getScores(
     schoolId,
     classId,
@@ -4001,7 +4156,7 @@ export async function getRecordDashboardScores(
     resolvedTermId,
     resolvedSessionId,
     {
-      students: options?.students || [],
+      students: resolvedStudents,
       allowLegacyFallback:
         options?.allowLegacyFallback === undefined ? true : options.allowLegacyFallback,
       allowBroadLegacyFallback:
@@ -4032,22 +4187,23 @@ export async function warmRecordDashboardScopeCache({
   sessionId,
   termId,
 }) {
-  const students = await getRecordDashboardRoster(schoolId, classId, sessionId, {
+  const studentsPromise = getRecordDashboardRoster(schoolId, classId, sessionId, {
     termId,
   });
-  const scores = await getRecordDashboardScores(
+  const scoresPromise = getRecordDashboardScores(
     schoolId,
     classId,
     subjectId,
     termId,
     sessionId,
     {
-      students,
+      studentsPromise,
       allowLegacyFallback: true,
       allowBroadLegacyFallback: false,
       preferContextQueryFirst: true,
     }
   );
+  const [students, scores] = await Promise.all([studentsPromise, scoresPromise]);
   return { students, scores };
 }
 
@@ -4425,6 +4581,10 @@ export async function saveScores(
         studentId: studentIdToken,
         enrollmentId: String(row?.enrollmentId || enrollment?.id || "").trim(),
         classId: String(row?.classId || enrollment?.classId || resolvedClassId || "").trim(),
+        departmentId: String(row?.student?.departmentId || enrollment?.departmentId || "").trim(),
+        departmentName: String(
+          row?.student?.departmentName || enrollment?.departmentName || ""
+        ).trim(),
         sessionId: String(
           row?.sessionId || enrollment?.sessionId || resolvedSessionId || ""
         ).trim(),
@@ -4520,6 +4680,8 @@ export async function saveScores(
           sessionId: liveScope?.sessionId || resolvedSessionId,
           termId: resolvedTermId,
           termDocId: resolvedTermDocId || termRecord.id,
+          departmentId: liveScope?.departmentId || "",
+          departmentName: liveScope?.departmentName || "",
           subjectId,
           subjectToken: normalizeSubjectMatchToken(subjectId),
           test1: normalizedScoreData.test1,
@@ -4947,12 +5109,14 @@ export async function getScores(
 
 const buildResultSelectionStorageKey = (userId = "") => {
   const normalizedUserId = String(userId || "").trim();
-  return normalizedUserId ? `resultSelection_${normalizedUserId}` : "resultSelection";
+  return normalizedUserId ? `resultSelection_${normalizedUserId}` : "";
 };
 
 export function saveResultSelection(resultData, userId = "") {
   try {
-    localStorage.setItem(buildResultSelectionStorageKey(userId), JSON.stringify(resultData));
+    const storageKey = buildResultSelectionStorageKey(userId);
+    if (!storageKey) return;
+    localStorage.setItem(storageKey, JSON.stringify(resultData));
   } catch (error) {
     console.error("Error saving result selection:", error);
   }
@@ -4977,6 +5141,8 @@ export function canonicalizeResultSelection(resultData, schoolId) {
   const nextSelection = {
     ...(resultData || {}),
     class: normalizeClassId(resultData?.class),
+    departmentId: String(resultData?.departmentId || "").trim(),
+    departmentName: String(resultData?.departmentName || "").trim(),
   };
   nextSelection.subject = canonicalizeSubjectForClass(
     schoolId,
@@ -4988,15 +5154,30 @@ export function canonicalizeResultSelection(resultData, schoolId) {
 
 export function getResultSelection(userId = "") {
   try {
-    const data =
-      localStorage.getItem(buildResultSelectionStorageKey(userId)) ||
-      localStorage.getItem("resultSelection");
+    const storageKey = buildResultSelectionStorageKey(userId);
+    const data = storageKey ? localStorage.getItem(storageKey) : null;
     return data
       ? JSON.parse(data)
-      : { class: "", term: "", session: "", subject: "" };
+      : {
+          class: "",
+          term: "",
+          session: "",
+          sessionId: "",
+          subject: "",
+          departmentId: "",
+          departmentName: "",
+        };
   } catch (error) {
     console.error("Error getting result selection:", error);
-    return { class: "", term: "", session: "", subject: "" };
+    return {
+      class: "",
+      term: "",
+      session: "",
+      sessionId: "",
+      subject: "",
+      departmentId: "",
+      departmentName: "",
+    };
   }
 }
 export function getRemarkByGrade(grade) {
@@ -5090,6 +5271,7 @@ export async function saveAdminSettings(settings, schoolId) {
       gradingScale: normalizeGradingScale(settings?.gradingScale || getDefaultGradingScale()),
       nextTermBegins: settings?.nextTermBegins || "2026-04-20",
       resultConfig: normalizeResultConfig(settings?.resultConfig || {}),
+      classStructure: getNormalizedClassStructure(schoolId, settings?.classStructure || {}),
     };
     await instrumentFirestoreWrite(
       setDoc(settingsRef, normalizedSettings, {
@@ -5157,6 +5339,7 @@ export async function getAdminSettings(schoolId) {
         nextTermBegins: "2026-04-20",
         gradingScale: getDefaultGradingScale(),
         resultConfig: getDefaultResultConfig(),
+        classStructure: getDefaultClassStructure(),
       };
     }
     
@@ -5167,6 +5350,10 @@ export async function getAdminSettings(schoolId) {
         nextTermBegins: memoryCached?.nextTermBegins || "2026-04-20",
         gradingScale: normalizeGradingScale(memoryCached?.gradingScale || getDefaultGradingScale()),
         resultConfig: normalizeResultConfig(memoryCached?.resultConfig || {}),
+        classStructure: getNormalizedClassStructure(
+          schoolId,
+          memoryCached?.classStructure || {}
+        ),
       };
     }
 
@@ -5179,6 +5366,7 @@ export async function getAdminSettings(schoolId) {
         nextTermBegins: parsed?.nextTermBegins || "2026-04-20",
         gradingScale: normalizeGradingScale(parsed?.gradingScale || getDefaultGradingScale()),
         resultConfig: normalizeResultConfig(parsed?.resultConfig || {}),
+        classStructure: getNormalizedClassStructure(schoolId, parsed?.classStructure || {}),
       };
       setCachedValue(`admin_settings::${schoolId}`, normalized, CACHE_TTL.adminSettingsMs);
       return normalized;
@@ -5200,6 +5388,7 @@ export async function getAdminSettings(schoolId) {
         nextTermBegins: settings?.nextTermBegins || "2026-04-20",
         gradingScale: normalizeGradingScale(settings?.gradingScale || getDefaultGradingScale()),
         resultConfig: normalizeResultConfig(settings?.resultConfig || {}),
+        classStructure: getNormalizedClassStructure(schoolId, settings?.classStructure || {}),
       };
       setSessionState(`adminSettings_${schoolId}`, JSON.stringify(normalized));
       setCachedValue(`admin_settings::${schoolId}`, normalized, CACHE_TTL.adminSettingsMs);
@@ -5211,6 +5400,9 @@ export async function getAdminSettings(schoolId) {
       nextTermBegins: "2026-04-20",
       gradingScale: getDefaultGradingScale(),
       resultConfig: getDefaultResultConfig(),
+      classStructure: getDefaultClassStructure({
+        seniorSubjects: getCustomSubjects(schoolId)?.senior || [],
+      }),
     };
   } catch (error) {
     console.error("Error getting admin settings:", error);
@@ -5218,6 +5410,9 @@ export async function getAdminSettings(schoolId) {
       nextTermBegins: "2026-04-20",
       gradingScale: getDefaultGradingScale(),
       resultConfig: getDefaultResultConfig(),
+      classStructure: getDefaultClassStructure({
+        seniorSubjects: getCustomSubjects(schoolId)?.senior || [],
+      }),
     };
   }
 }
@@ -5484,6 +5679,41 @@ export function getSubjectsByClass(schoolId, className) {
   return juniorClasses.includes(normalizedClassName)
     ? customSubjects.junior
     : customSubjects.senior;
+}
+
+export function getNormalizedClassStructure(schoolId, classStructure = null) {
+  const seniorSubjects = getCustomSubjects(schoolId)?.senior || [];
+  return normalizeClassStructure(classStructure || {}, {
+    seniorSubjects,
+  });
+}
+
+export function getDepartmentAwareSubjects(schoolId, classId, options = {}) {
+  const baseSubjects = options?.subjects || getSubjectsByClass(schoolId, classId) || [];
+  const classStructure = getNormalizedClassStructure(
+    schoolId,
+    options?.classStructure || options?.adminSettings?.classStructure || {}
+  );
+
+  return getDepartmentSubjectOptions(
+    classStructure,
+    classId,
+    options?.departmentId,
+    baseSubjects
+  );
+}
+
+export async function getDepartmentAwareClassStudents(schoolId, classId, options = {}) {
+  const allStudents = await getClassStudents(schoolId, classId, options);
+  const classStructure = getNormalizedClassStructure(
+    schoolId,
+    options?.classStructure || options?.adminSettings?.classStructure || {}
+  );
+
+  return filterStudentsByDepartmentScope(allStudents, classStructure, classId, {
+    departmentId: options?.departmentId,
+    subjectId: options?.subjectId,
+  });
 }
 
 // Custom Grading Scale Management
@@ -6459,5 +6689,6 @@ export async function cleanupMalformedScores(schoolId) {
     return { removed: 0, normalized: 0 };
   }
 }
+
 
 

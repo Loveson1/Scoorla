@@ -7,24 +7,40 @@ import {
   sendPasswordResetEmail,
   sendEmailVerification,
   reload,
+  deleteUser as deleteAuthUser,
 } from "firebase/auth";
 import {
+  deleteDoc,
   doc,
   getDoc,
+  serverTimestamp,
   setDoc,
   updateDoc,
 } from "firebase/firestore";
 import {
   endUserSession,
-  clearAllSessionState,
+  clearAllBrowserIdentityState,
 } from "./userSession";
 import {
+  clearCachedUserScope,
   ensureUserScope,
   setCachedUserScope,
 } from "./userScopeCache";
 import { clearDataCache } from "../services/dataCache";
 
-const schoolCacheKey = (userId) => `cached_school_id_${userId}`;
+const ACCOUNT_IDENTITY_COLLECTIONS = [
+  "users",
+  "platformUsers",
+  "onboarding",
+  "userOnboarding",
+  "onboardingStatus",
+];
+
+const clearClientIdentityState = () => {
+  clearCachedUserScope();
+  clearDataCache();
+  clearAllBrowserIdentityState();
+};
 
 /**
  * Listen for authentication state changes
@@ -60,8 +76,7 @@ export const logoutUser = async () => {
     }
   }
 
-  clearDataCache();
-  clearAllSessionState();
+  clearClientIdentityState();
 
   try {
     await signOut(auth);
@@ -69,6 +84,48 @@ export const logoutUser = async () => {
     console.error("Error signing out:", error);
     throw error;
   }
+};
+
+export const deleteUserIdentityDocuments = async (uid = "") => {
+  const resolvedUid = String(uid || auth.currentUser?.uid || "").trim();
+  if (!resolvedUid) {
+    throw new Error("User UID is required for account cleanup.");
+  }
+
+  const results = await Promise.all(
+    ACCOUNT_IDENTITY_COLLECTIONS.map(async (collectionName) => {
+      try {
+        await deleteDoc(doc(firestore, collectionName, resolvedUid));
+        return { collectionName, ok: true };
+      } catch (error) {
+        return { collectionName, ok: false, error };
+      }
+    })
+  );
+  const failures = results.filter((result) => !result.ok);
+  if (failures.length > 0) {
+    const cleanupError = new Error(
+      `Unable to delete account identity documents: ${failures
+        .map((failure) => failure.collectionName)
+        .join(", ")}`
+    );
+    cleanupError.failures = failures;
+    throw cleanupError;
+  }
+
+  clearClientIdentityState();
+  return { uid: resolvedUid, deletedCollections: ACCOUNT_IDENTITY_COLLECTIONS };
+};
+
+export const deleteCurrentUserAccount = async () => {
+  const currentUser = auth.currentUser;
+  if (!currentUser?.uid) {
+    throw new Error("No authenticated user found.");
+  }
+
+  await deleteUserIdentityDocuments(currentUser.uid);
+  await deleteAuthUser(currentUser);
+  clearClientIdentityState();
 };
 
 /**
@@ -273,29 +330,10 @@ export const getUserSchoolId = async (userId) => {
       screen: "AuthUtils",
       action: "get_user_school_id",
     });
-    if (scope?.schoolId) {
-      const schoolId = scope.schoolId || null;
-      if (schoolId) {
-        try {
-          localStorage.setItem(schoolCacheKey(userId), String(schoolId));
-        } catch (storageError) {
-          void storageError;
-        }
-      }
-      return schoolId;
-    }
-    try {
-      return localStorage.getItem(schoolCacheKey(userId)) || null;
-    } catch {
-      return null;
-    }
+    return scope?.schoolId || null;
   } catch (error) {
     console.error("Error getting user school ID:", error);
-    try {
-      return localStorage.getItem(schoolCacheKey(userId)) || null;
-    } catch {
-      return null;
-    }
+    return null;
   }
 };
 
@@ -316,32 +354,29 @@ export const setUserRole = async (userId, role, schoolId) => {
       await updateDoc(userRef, {
         role,
         schoolId,
+        isActive: true,
         roleUpdatedAt: new Date().toISOString(),
       });
     } else {
       // Create new user document
       await setDoc(userRef, {
+        uid: userId,
         role,
         schoolId,
         email: auth.currentUser?.email,
-        createdAt: new Date().toISOString(),
+        isActive: true,
+        createdAt: serverTimestamp(),
         roleUpdatedAt: new Date().toISOString(),
       });
     }
 
     setCachedUserScope(userId, {
+      uid: userId,
       role,
       schoolId,
       email: auth.currentUser?.email,
+      isActive: true,
     });
-
-    if (schoolId) {
-      try {
-        localStorage.setItem(schoolCacheKey(userId), String(schoolId));
-      } catch (storageError) {
-        void storageError;
-      }
-    }
   } catch (error) {
     console.error("Error setting user role:", error);
     throw error;

@@ -7,13 +7,16 @@ export default function AddStudent({
   onUpdate,
   editingStudent,
   isSubmitting = false,
+  departments = [],
+  defaultDepartmentId = "",
+  departmentRequired = false,
 }) {
   const [isLocalSubmitting, setIsLocalSubmitting] = useState(false);
   const [form, setForm] = useState({
     name: "",
     regNumber: "",
     sex: "",
-   
+    departmentId: "",
   });
   const busy = isSubmitting || isLocalSubmitting;
 
@@ -25,7 +28,8 @@ export default function AddStudent({
         name: editingStudent.name || "",
         regNumber: editingStudent.regNumber || "",
         sex: editingStudent.sex || editingStudent.gender || "",
-        
+        departmentId:
+          editingStudent.departmentId || defaultDepartmentId || "",
       });
       return;
     }
@@ -34,9 +38,9 @@ export default function AddStudent({
       name: "",
       regNumber: "",
       sex: "",
-     
+      departmentId: defaultDepartmentId || "",
     });
-  }, [editingStudent, isOpen]);
+  }, [defaultDepartmentId, editingStudent, isOpen]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -52,6 +56,10 @@ export default function AddStudent({
 
     if (!form.name.trim()) {
       alert("Please enter student name");
+      return;
+    }
+    if (departmentRequired && !String(form.departmentId || "").trim()) {
+      alert("Please select a department");
       return;
     }
 
@@ -137,6 +145,29 @@ export default function AddStudent({
               <option value="Female">Female</option>
             </select>
           </div>
+
+          {departmentRequired && (
+            <div className="flex flex-col">
+              <label htmlFor="departmentId" className="label-w mb-2">
+                Department <span className="text-red-500">*</span>
+              </label>
+              <select
+                id="departmentId"
+                name="departmentId"
+                value={form.departmentId || ""}
+                onChange={handleChange}
+                className="input"
+                disabled={busy}
+              >
+                <option value="">Select Department</option>
+                {departments.map((department) => (
+                  <option key={department.id} value={department.id}>
+                    {department.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
 
           <div className="flex gap-3 mt-8">

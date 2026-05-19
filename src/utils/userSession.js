@@ -52,6 +52,7 @@ export const initializeUserSession = async (userCredential, schoolId, role = "te
     console.log(`✅ User session initialized: ${user.uid}`);
     
     setCachedUserScope(user.uid, {
+      uid: user.uid,
       schoolId,
       role,
       email: user.email,
@@ -131,16 +132,18 @@ export const clearSessionState = (key) => {
 
 export const clearAllSessionState = () => {
   try {
-    const keysToRemove = [];
-    for (let index = 0; index < sessionStorage.length; index += 1) {
-      const key = sessionStorage.key(index);
-      if (String(key || "").startsWith("session_")) {
-        keysToRemove.push(key);
-      }
-    }
-    keysToRemove.forEach((key) => sessionStorage.removeItem(key));
+    sessionStorage.clear();
   } catch (error) {
     console.error("Error clearing all session state:", error);
+  }
+};
+
+export const clearAllBrowserIdentityState = () => {
+  clearAllSessionState();
+  try {
+    localStorage.clear();
+  } catch (error) {
+    console.error("Error clearing all local identity state:", error);
   }
 };
 
@@ -260,6 +263,8 @@ export default {
   setSessionState,
   getSessionState,
   clearSessionState,
+  clearAllSessionState,
+  clearAllBrowserIdentityState,
   
   // Persistent user data
   setUserData,

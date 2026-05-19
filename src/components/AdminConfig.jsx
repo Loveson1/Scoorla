@@ -42,6 +42,10 @@ import {
 import SessionListPanel from "./session/SessionListPanel";
 import PromotionConfirmModal from "./session/PromotionConfirmModal";
 import TeacherManagementPanel from "./TeacherManagementPanel";
+import {
+  getDefaultClassStructure,
+  normalizeClassStructure,
+} from "../utils/departmentUtils";
 
 const formatClassDisplay = (classId) => {
   const raw = String(classId || "").trim();
@@ -319,6 +323,9 @@ export default function AdminConfig() {
   const [newSubject, setNewSubject] = useState("");
   const [gradingScale, setGradingScale] = useState(getGradingScale());
   const [resultConfig, setResultConfig] = useState(getDefaultResultConfig());
+  const [classStructure, setClassStructure] = useState(
+    getDefaultClassStructure()
+  );
   const [nextTermBegins, setNextTermBegins] = useState("2026-04-20");
   const [schoolId, setSchoolId] = useState(null);
   const [sessionsWithCounts, setSessionsWithCounts] = useState([]);
@@ -475,8 +482,10 @@ export default function AdminConfig() {
   useEffect(() => {
     const loadLocalConfig = async () => {
       if (!schoolId) return;
-      setClasses(getCustomClasses(schoolId));
-      setSubjects(getCustomSubjects(schoolId));
+      const currentClasses = getCustomClasses(schoolId);
+      const currentSubjects = getCustomSubjects(schoolId);
+      setClasses(currentClasses);
+      setSubjects(currentSubjects);
       setGradingScale(getGradingScale(schoolId));
       try {
         const settings = await getAdminSettings(schoolId);
@@ -484,9 +493,19 @@ export default function AdminConfig() {
           setNextTermBegins(settings.nextTermBegins);
         }
         setResultConfig(normalizeResultConfig(settings?.resultConfig || {}));
+        setClassStructure(
+          normalizeClassStructure(settings?.classStructure || {}, {
+            seniorSubjects: currentSubjects?.senior || [],
+          })
+        );
       } catch {
         // Keep defaults if settings load fails
         setResultConfig(getDefaultResultConfig());
+        setClassStructure(
+          getDefaultClassStructure({
+            seniorSubjects: currentSubjects?.senior || [],
+          })
+        );
       }
     };
     loadLocalConfig();
@@ -897,6 +916,13 @@ export default function AdminConfig() {
       await addSubject(schoolId, selectedLevel, newSubject);
       const updated = getCustomSubjects(schoolId);
       setSubjects(updated);
+      if (selectedLevel === "senior") {
+        setClassStructure((prev) =>
+          normalizeClassStructure(prev, {
+            seniorSubjects: updated?.senior || [],
+          })
+        );
+      }
 
       alert(`Subject "${newSubject}" created for all classes!`);
       setNewSubject("");
@@ -913,9 +939,136 @@ export default function AdminConfig() {
       await removeSubject(schoolId, level, subject);
       const updated = getCustomSubjects(schoolId);
       setSubjects(updated);
+      if (level === "senior") {
+        setClassStructure((prev) =>
+          normalizeClassStructure(prev, {
+            seniorSubjects: updated?.senior || [],
+          })
+        );
+      }
     } catch (err) {
       console.error("Error removing subject:", err);
       alert("Error removing subject. Please try again.");
+    }
+  };
+
+  const updateDepartmentStructure = useCallback(
+    (updater, seniorSubjects = subjects?.senior || []) => {
+      setClassStructure((prev) => {
+        const base = normalizeClassStructure(prev, { seniorSubjects });
+        const nextValue = typeof updater === "function" ? updater(base) : updater;
+        return normalizeClassStructure(nextValue || {}, { seniorSubjects });
+      });
+    },
+    [subjects?.senior]
+  );
+
+  const handleDepartmentEnabledToggle = (seniorKey, enabled) => {
+    updateDepartmentStructure((prev) => ({
+      ...prev,
+      [seniorKey]: {
+        ...prev[seniorKey],
+        hasDepartments: enabled,
+      },
+    }));
+  };
+
+  const handleDepartmentCountChange = (seniorKey, value) => {
+    const nextCount = Math.max(2, Math.min(3, Number(value) || 2));
+    const defaults = getDefaultClassStructure({
+      seniorSubjects: subjects?.senior || [],
+    });
+    updateDepartmentStructure((prev) => {
+      const currentEntry = prev?.[seniorKey] || defaults[seniorKey];
+      const nextDepartments = Array.from({ length: nextCount }, (_, index) => {
+        return (
+          currentEntry?.departments?.[index] ||
+          defaults?.[seniorKey]?.departments?.[index]
+        );
+      });
+
+      return {
+        ...prev,
+        [seniorKey]: {
+          ...currentEntry,
+          departments: nextDepartments,
+        },
+      };
+    });
+  };
+
+  const handleDepartmentNameChange = (seniorKey, departmentIndex, value) => {
+    updateDepartmentStructure((prev) => ({
+      ...prev,
+      [seniorKey]: {
+        ...prev[seniorKey],
+        departments: (prev?.[seniorKey]?.departments || []).map((department, index) =>
+          index === departmentIndex
+            ? {
+                ...department,
+                name: value,
+              }
+            : department
+        ),
+      },
+    }));
+  };
+
+  const handleDepartmentSubjectToggle = (seniorKey, departmentIndex, subject) => {
+    updateDepartmentStructure((prev) => ({
+      ...prev,
+      [seniorKey]: {
+        ...prev[seniorKey],
+        departments: (prev?.[seniorKey]?.departments || []).map((department, index) => {
+          if (index !== departmentIndex) return department;
+          const existing = new Set(department?.subjects || []);
+          if (existing.has(subject)) {
+            existing.delete(subject);
+          } else {
+            existing.add(subject);
+          }
+          return {
+            ...department,
+            subjects: [...existing],
+          };
+        }),
+      },
+    }));
+  };
+
+  const handleMergeGeneralSubjectsToggle = (seniorKey, enabled) => {
+    updateDepartmentStructure((prev) => ({
+      ...prev,
+      [seniorKey]: {
+        ...prev[seniorKey],
+        mergeGeneralSubjects: enabled,
+      },
+    }));
+  };
+
+  const handleSaveClassStructure = async () => {
+    if (!schoolId) {
+      alert("Class structure cannot be saved right now. Refresh and try again.");
+      return;
+    }
+
+    try {
+      const settings = await getAdminSettings(schoolId);
+      const nextClassStructure = normalizeClassStructure(classStructure, {
+        seniorSubjects: subjects?.senior || [],
+      });
+      await saveAdminSettings(
+        {
+          ...settings,
+          classStructure: nextClassStructure,
+        },
+        schoolId
+      );
+      setClassStructure(nextClassStructure);
+      alert("Department structure updated.");
+    } catch (error) {
+      console.error("Error saving class structure:", error);
+      alert(`Failed to save department structure: ${error?.message || "Unknown error"}`);
     }
   };
 
@@ -1238,6 +1391,9 @@ export default function AdminConfig() {
   };
 
   const normalizedResultConfig = normalizeResultConfig(resultConfig);
+  const normalizedClassStructure = normalizeClassStructure(classStructure, {
+    seniorSubjects: subjects?.senior || [],
+  });
   const normalizedGradingScale = normalizeGradingScale(gradingScale);
   const enabledAssessmentTotal = normalizedResultConfig.assessments
     .filter((component) => component.enabled !== false)
@@ -1859,6 +2015,172 @@ export default function AdminConfig() {
                       </button>
                     </div>
                   ))}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-blue-100 bg-white p-6 dark:border-blue-900/40 dark:bg-gray-800">
+                <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <h4 className="text-lg font-semibold text-black dark:text-white">
+                      Senior Department Structure
+                    </h4>
+                    <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+                      Enable optional department splits for SS1 to SS3. Leaving a class disabled keeps the current class flow unchanged.
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleSaveClassStructure}
+                    className="rounded-lg bg-blue-800 px-4 py-2 text-sm font-semibold text-white transition-all duration-300 hover:bg-blue-900 dark:bg-blue-700 dark:hover:bg-blue-600"
+                  >
+                    Save Department Setup
+                  </button>
+                </div>
+
+                <div className="mt-6 space-y-4">
+                  {["SS1", "SS2", "SS3"].map((seniorKey) => {
+                    const config = normalizedClassStructure?.[seniorKey] || {
+                      hasDepartments: false,
+                      departments: [],
+                      mergeGeneralSubjects: false,
+                    };
+                    const activeDepartments = config?.departments || [];
+
+                    return (
+                      <div
+                        key={seniorKey}
+                        className="rounded-2xl border border-gray-200 bg-gray-50 p-5 dark:border-gray-700 dark:bg-gray-900/60"
+                      >
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                          <div>
+                            <h5 className="text-base font-semibold text-black dark:text-white">
+                              {seniorKey}
+                            </h5>
+                            <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+                              Configure department names, subject sets, and whether shared subjects use a full-class roster.
+                            </p>
+                          </div>
+
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-medium text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                              <input
+                                type="checkbox"
+                                checked={config.hasDepartments === true}
+                                onChange={(event) =>
+                                  handleDepartmentEnabledToggle(seniorKey, event.target.checked)
+                                }
+                                className="h-4 w-4 rounded border-gray-300 text-blue-700 focus:ring-blue-500"
+                              />
+                              Enable departments
+                            </label>
+
+                            <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-medium text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                              <span>Department count</span>
+                              <select
+                                value={activeDepartments.length || 3}
+                                onChange={(event) =>
+                                  handleDepartmentCountChange(seniorKey, event.target.value)
+                                }
+                                className="input ml-auto max-w-[7rem]"
+                              >
+                                <option value="2">2 departments</option>
+                                <option value="3">3 departments</option>
+                              </select>
+                            </label>
+                          </div>
+                        </div>
+
+                        {config.hasDepartments ? (
+                          <>
+                            <label className="mt-4 flex items-center gap-3 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-900 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-100">
+                              <input
+                                type="checkbox"
+                                checked={config.mergeGeneralSubjects === true}
+                                onChange={(event) =>
+                                  handleMergeGeneralSubjectsToggle(seniorKey, event.target.checked)
+                                }
+                                className="h-4 w-4 rounded border-blue-300 text-blue-700 focus:ring-blue-500"
+                              />
+                              Merge shared subjects across departments
+                            </label>
+                            <p className="mt-2 text-xs text-blue-800/90 dark:text-blue-200/90">
+                              When enabled, any subject assigned to every department is recorded with the full class roster instead of department-only students.
+                            </p>
+
+                            <div className="mt-5 grid gap-4 xl:grid-cols-3">
+                              {activeDepartments.map((department, departmentIndex) => (
+                                <div
+                                  key={`${seniorKey}-${department.id}`}
+                                  className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800"
+                                >
+                                  <label className="block text-sm font-semibold text-gray-700 dark:text-gray-200">
+                                    Department Name
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={department.name || ""}
+                                    onChange={(event) =>
+                                      handleDepartmentNameChange(
+                                        seniorKey,
+                                        departmentIndex,
+                                        event.target.value
+                                      )
+                                    }
+                                    className="input mt-2 w-full"
+                                    placeholder={`Department ${departmentIndex + 1}`}
+                                  />
+
+                                  <div className="mt-4">
+                                    <p className="text-sm font-semibold text-gray-700 dark:text-gray-200">
+                                      Subjects
+                                    </p>
+                                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                      Choose the subjects this department should handle.
+                                    </p>
+                                  </div>
+
+                                  <div className="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">
+                                    {(subjects?.senior || []).length > 0 ? (
+                                      subjects.senior.map((subject) => {
+                                        const isChecked = (department?.subjects || []).includes(subject);
+                                        return (
+                                          <label
+                                            key={`${department.id}-${subject}`}
+                                            className="flex items-center gap-3 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 transition-all duration-200 hover:border-blue-300 dark:border-gray-700 dark:text-gray-200 dark:hover:border-blue-700"
+                                          >
+                                            <input
+                                              type="checkbox"
+                                              checked={isChecked}
+                                              onChange={() =>
+                                                handleDepartmentSubjectToggle(
+                                                  seniorKey,
+                                                  departmentIndex,
+                                                  subject
+                                                )
+                                              }
+                                              className="h-4 w-4 rounded border-gray-300 text-blue-700 focus:ring-blue-500"
+                                            />
+                                            <span>{subject}</span>
+                                          </label>
+                                        );
+                                      })
+                                    ) : (
+                                      <p className="rounded-lg border border-dashed border-gray-300 px-3 py-4 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                                        Add senior subjects first to assign department subjects.
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        ) : (
+                          <p className="mt-4 rounded-xl border border-dashed border-gray-300 px-4 py-3 text-sm text-gray-600 dark:border-gray-700 dark:text-gray-400">
+                            Departments are disabled for {seniorKey}. Students and records will continue using the existing class-wide flow.
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>

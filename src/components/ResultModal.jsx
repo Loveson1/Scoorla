@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+﻿import { useState, useEffect, useRef, useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
   canonicalizeResultSelection,
+  getDepartmentAwareSubjects,
   getResultSelection,
   queueRecordDashboardWarmScopes,
   saveResultSelection,
@@ -10,6 +12,10 @@ import {
 import { useSessionContext } from "../context/SessionContext";
 import { useAuthContext } from "../context/AuthContext";
 import { useSchoolBootstrap } from "../context/SchoolBootstrapContext";
+import {
+  buildRecordDashboardPath,
+  getDepartmentsForClass,
+} from "../utils/departmentUtils";
 
 const getBootstrapClassOptions = (schoolData = {}) => {
   return Object.values(schoolData?.classes || {})
@@ -31,6 +37,7 @@ const getBootstrapSubjectsByClass = (schoolData = {}, classId = "") => {
 
 export default function ResultModal({ isOpen, onClose }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const {
     selectedSessionId,
     selectedSessionName,
@@ -46,8 +53,9 @@ export default function ResultModal({ isOpen, onClose }) {
     authUser,
     schoolId,
   } = useAuthContext();
-  const { schoolData } = useSchoolBootstrap();
+  const { schoolData, adminSettings } = useSchoolBootstrap();
   const [selectedClass, setSelectedClass] = useState("");
+  const [selectedDepartmentId, setSelectedDepartmentId] = useState("");
   const [selectedSubject, setSelectedSubject] = useState("");
   const [classes, setClasses] = useState([]);
   const [subjects, setSubjects] = useState([]);
@@ -57,6 +65,7 @@ export default function ResultModal({ isOpen, onClose }) {
     schoolId: targetSchoolId,
     userId,
     classId,
+    departmentId,
     subjectId,
     sessionId,
     termId,
@@ -66,6 +75,7 @@ export default function ResultModal({ isOpen, onClose }) {
       String(targetSchoolId || "").trim(),
       String(userId || "").trim(),
       String(classId || "").trim(),
+      String(departmentId || "").trim() || "all",
       String(subjectId || "").trim(),
       String(sessionId || "").trim(),
       String(termId || "").trim(),
@@ -86,6 +96,7 @@ export default function ResultModal({ isOpen, onClose }) {
         schoolId,
         userId: authUser.uid,
         classId,
+        departmentId: selectedDepartmentId,
         subjectId,
         sessionId,
         termId,
@@ -117,12 +128,13 @@ export default function ResultModal({ isOpen, onClose }) {
         // Ignore snapshot cache write failures.
       }
     },
-    [authUser?.uid, schoolId]
+    [authUser?.uid, schoolId, selectedDepartmentId]
   );
 
   useEffect(() => {
     if (isOpen) {
       setSelectedClass("");
+      setSelectedDepartmentId("");
       setSelectedSubject("");
       const bootstrapClasses = getBootstrapClassOptions(schoolData);
       const allClasses =
@@ -148,21 +160,40 @@ export default function ResultModal({ isOpen, onClose }) {
     }
   }, [getRecordClassIds, isOpen, isAdmin, schoolId, schoolData]);
 
+  const selectedDepartments = selectedClass
+    ? getDepartmentsForClass(adminSettings?.classStructure || {}, selectedClass)
+    : [];
+  const hasSelectedClassDepartments = selectedDepartments.length > 0;
+
   useEffect(() => {
-    if (selectedClass && schoolId) {
-      const classSubjects = getBootstrapSubjectsByClass(schoolData, selectedClass) || [];
-      const teacherSubjects = getRecordSubjectsForClass(selectedClass);
-      const filteredSubjects = isAdmin
-        ? classSubjects
-        : classSubjects.filter(
-            (item) => teacherSubjects.includes(item) && canRecordClassSubject(selectedClass, item)
-          );
-      setSubjects(filteredSubjects);
-    } else {
+    if (!selectedClass || !schoolId) {
       setSubjects([]);
+      return;
     }
+
+    if (hasSelectedClassDepartments && !selectedDepartmentId) {
+      setSubjects([]);
+      return;
+    }
+
+    const classSubjects = getBootstrapSubjectsByClass(schoolData, selectedClass) || [];
+    const scopedSubjects = getDepartmentAwareSubjects(schoolId, selectedClass, {
+      departmentId: selectedDepartmentId,
+      classStructure: adminSettings?.classStructure || {},
+      subjects: classSubjects,
+    });
+    const teacherSubjects = getRecordSubjectsForClass(selectedClass);
+    const filteredSubjects = isAdmin
+      ? scopedSubjects
+      : scopedSubjects.filter(
+          (item) => teacherSubjects.includes(item) && canRecordClassSubject(selectedClass, item)
+        );
+    setSubjects(filteredSubjects);
   }, [
+    adminSettings?.classStructure,
+    hasSelectedClassDepartments,
     selectedClass,
+    selectedDepartmentId,
     schoolId,
     getRecordSubjectsForClass,
     isAdmin,
@@ -171,7 +202,14 @@ export default function ResultModal({ isOpen, onClose }) {
   ]);
 
   useEffect(() => {
-    if (!isOpen || !selectedClass || !selectedSubject || !schoolId || !authUser?.uid) {
+    if (
+      !isOpen ||
+      !selectedClass ||
+      !selectedSubject ||
+      !schoolId ||
+      !authUser?.uid ||
+      (hasSelectedClassDepartments && !selectedDepartmentId)
+    ) {
       preloadPromiseRef.current = null;
       return;
     }
@@ -194,8 +232,10 @@ export default function ResultModal({ isOpen, onClose }) {
 
     preloadPromiseRef.current = preloadPromise;
   }, [
+    hasSelectedClassDepartments,
     isOpen,
     selectedClass,
+    selectedDepartmentId,
     selectedSubject,
     selectedSessionId,
     selectedTermId,
@@ -207,7 +247,14 @@ export default function ResultModal({ isOpen, onClose }) {
   ]);
 
   useEffect(() => {
-    if (!isOpen || !selectedClass || !schoolId || !authUser?.uid || subjects.length === 0) {
+    if (
+      !isOpen ||
+      !selectedClass ||
+      !schoolId ||
+      !authUser?.uid ||
+      subjects.length === 0 ||
+      (hasSelectedClassDepartments && !selectedDepartmentId)
+    ) {
       return;
     }
     const resolvedSessionId = selectedSessionId || activeSessionId || "";
@@ -244,6 +291,7 @@ export default function ResultModal({ isOpen, onClose }) {
     const scopes = [...new Set(candidateSubjects.filter(Boolean))].map((subjectId) => ({
       schoolId,
       classId: selectedClass,
+      departmentId: selectedDepartmentId,
       subjectId,
       sessionId: resolvedSessionId,
       termId: resolvedTermId,
@@ -261,14 +309,16 @@ export default function ResultModal({ isOpen, onClose }) {
     isOpen,
     schoolId,
     selectedClass,
+    selectedDepartmentId,
     selectedSessionId,
     selectedTermId,
     subjects,
+    hasSelectedClassDepartments,
   ]);
 
   const handleInputScore = async () => {
-    if (!selectedClass || !selectedSubject) {
-      alert("Please select class and subject");
+    if (!selectedClass || !selectedSubject || (hasSelectedClassDepartments && !selectedDepartmentId)) {
+      alert("Please select class, department, and subject");
       return;
     }
     if (!isAdmin && !canRecordClassSubject(selectedClass, selectedSubject)) {
@@ -282,16 +332,37 @@ export default function ResultModal({ isOpen, onClose }) {
       return;
     }
     const resolvedSessionName = selectedSessionName || "Not set";
+    const selectedDepartment =
+      selectedDepartments.find(
+        (department) => String(department?.id || "").trim() === String(selectedDepartmentId || "").trim()
+      ) || null;
     const resultData = {
       class: selectedClass,
       term: selectedTermId || activeTermId || "term1",
       session: resolvedSessionName,
       sessionId: resolvedSessionId,
       subject: selectedSubject,
+      departmentId: String(selectedDepartment?.id || "").trim(),
+      departmentName: String(selectedDepartment?.name || "").trim(),
     };
 
+    queryClient.setQueryData(
+      [
+        "recordSelection",
+        String(authUser?.uid || "").trim() || "anonymous",
+        String(schoolId || "").trim() || "none",
+      ],
+      resultData
+    );
     saveResultSelection(resultData, authUser?.uid);
-    navigate("/record-dashboard");
+    navigate(
+      buildRecordDashboardPath({
+        classId: selectedClass,
+        departmentId: selectedDepartmentId,
+        subjectId: selectedSubject,
+        classStructure: adminSettings?.classStructure || {},
+      })
+    );
     onClose();
   };
 
@@ -324,6 +395,7 @@ export default function ResultModal({ isOpen, onClose }) {
                   key={cls.id}
                   onClick={() => {
                     setSelectedClass(cls.id);
+                    setSelectedDepartmentId("");
                     setSelectedSubject(""); // Reset subject when class changes
                   }}
                   className={`py-2 px-3 rounded-lg font-medium transition-all duration-300 text-sm md:text-base ${
@@ -338,11 +410,45 @@ export default function ResultModal({ isOpen, onClose }) {
             </div>
           </div>
 
+          {selectedClass && hasSelectedClassDepartments && (
+            <div>
+              <label className="label-w block mb-3">Department</label>
+              <div className="grid grid-cols-2 gap-2 md:gap-3">
+                {selectedDepartments.map((department) => (
+                  <button
+                    key={department.id}
+                    onClick={() => {
+                      setSelectedDepartmentId(department.id);
+                      setSelectedSubject("");
+                    }}
+                    className={`rounded-lg px-3 py-2 text-left text-sm font-medium transition-all duration-300 md:text-base ${
+                      selectedDepartmentId === department.id
+                        ? "bg-blue-800 text-white shadow-lg"
+                        : "bg-gray-100 text-black border border-gray-300 hover:border-blue-800 dark:bg-gray-700 dark:text-white dark:border-gray-600"
+                    }`}
+                  >
+                    <span className="block">{department.name}</span>
+                    <span
+                      className={`mt-1 block text-xs ${
+                        selectedDepartmentId === department.id
+                          ? "text-blue-100"
+                          : "text-gray-500 dark:text-gray-400"
+                      }`}
+                    >
+                      {(department.subjects || []).length} subject
+                      {(department.subjects || []).length === 1 ? "" : "s"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Subject Selection - only show if class is selected */}
           {selectedClass && subjects.length > 0 && (
             <div>
               <label className="label-w block mb-3">Subject</label>
-              <div className="space-y-2 max-h-48 overflow-y-auto">
+              <div className="space-y-2 max-h-[8.75rem] overflow-y-auto pr-1">
                 {subjects.map((subject) => {
                   return (
                     <button
@@ -361,8 +467,8 @@ export default function ResultModal({ isOpen, onClose }) {
               </div>
             </div>
           )}
-        </div>
 
+        </div>
         {/* Action Buttons */}
         <div className="flex gap-3 mt-8">
           <button
@@ -373,7 +479,7 @@ export default function ResultModal({ isOpen, onClose }) {
           </button>
           <button
             onClick={handleInputScore}
-            disabled={!selectedSubject}
+            disabled={!selectedSubject || (hasSelectedClassDepartments && !selectedDepartmentId)}
             className="flex-1 py-2 px-4 rounded-lg bg-blue-800 hover:bg-blue-900 dark:bg-blue-700 dark:hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-semibold transition-all duration-300"
           >
             Input Score
@@ -383,6 +489,8 @@ export default function ResultModal({ isOpen, onClose }) {
     </div>
   );
 }
+
+
 
 
 

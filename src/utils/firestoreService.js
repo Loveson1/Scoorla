@@ -710,6 +710,8 @@ export async function promoteStudents({
       schoolId,
       studentId: enrollment.studentId,
       classId: nextClassId,
+      departmentId: String(enrollment?.departmentId || "").trim(),
+      departmentName: String(enrollment?.departmentName || "").trim(),
       sessionId: targetSession.sessionId,
       entryTermId: "term1",
       entryTermOrder: 1,

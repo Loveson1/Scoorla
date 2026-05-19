@@ -79,7 +79,7 @@ export default function VerifyEmail() {
         
         setTimeout(() => {
           // Route based on onboarding completion to avoid redirect loops.
-          isOnboardingComplete().then((complete) => {
+          isOnboardingComplete(getCurrentUser()?.uid).then((complete) => {
             navigate(complete ? "/school-dashboard" : "/welcome");
           });
         }, 2000);
@@ -98,7 +98,7 @@ export default function VerifyEmail() {
   useEffect(() => {
     if (verified) {
       const timer = setTimeout(() => {
-        isOnboardingComplete().then((complete) => {
+        isOnboardingComplete(getCurrentUser()?.uid).then((complete) => {
           navigate(complete ? "/school-dashboard" : "/welcome");
         });
       }, 2000);
